@@ -18,7 +18,12 @@ $mods = @(
 $cpu = New-CpuReport -Name 'Intel(R) Core(TM) i7-10875H CPU @ 2.30GHz' -Cores 8 -Threads 16 -MaxClockMHz 2304 `
                      -L2CacheKB 2048 -L3CacheKB 16384 -Socket 'CPU 1' -AddressWidth 64 -VirtualizationEnabled $false -MemoryType 'DDR4'
 $mem = New-MemoryReport -Modules $mods -MaxCapacityBytes 68719476736 -TotalSlots 2 -BoardMaker 'Dell Inc.' -BoardModel '0CXCCY' -BoardVersion 'A03'
-$report = New-SystemReport -Cpu $cpu -Memory $mem
+$rawGpus = @(
+    [pscustomobject]@{ Name='NVIDIA GeForce RTX 2060 with Max-Q Design'; Vendor='NVIDIA'; AdapterRamBytes=4293918720; RegistryVramBytes=6442450944; DriverVersion='32.0.15.8180'; DriverDate=[datetime]'2025-10-28'; Availability=8; ResH=0; ResV=0; ResRefresh=0 }
+    [pscustomobject]@{ Name='Intel(R) UHD Graphics'; Vendor='Intel Corporation'; AdapterRamBytes=1073741824; RegistryVramBytes=$null; DriverVersion='31.0.101.2130'; DriverDate=[datetime]'2024-08-12'; Availability=3; ResH=1920; ResV=1200; ResRefresh=59 }
+)
+$gpu = New-GpuReport -Gpus $rawGpus -Now ([datetime]'2026-06-30')
+$report = New-SystemReport -Cpu $cpu -Memory $mem -Gpu $gpu
 
 try {
     $form = New-SystemForm $report
@@ -26,9 +31,9 @@ try {
     Check ($form.Text -eq 'System Info')            'window title'
     $tabControl = $form.Controls | Where-Object { $_ -is [System.Windows.Forms.TabControl] } | Select-Object -First 1
     Check ($null -ne $tabControl)            'has a TabControl'
-    Check ($tabControl.TabPages.Count -eq 3) 'three tabs'
+    Check ($tabControl.TabPages.Count -eq 4) 'four tabs'
     $tabNames = @($tabControl.TabPages | ForEach-Object { $_.Text })
-    Check (($tabNames -contains 'Overview') -and ($tabNames -contains 'CPU') -and ($tabNames -contains 'Memory')) 'Overview/CPU/Memory tabs'
+    Check (($tabNames -contains 'Overview') -and ($tabNames -contains 'CPU') -and ($tabNames -contains 'GPU') -and ($tabNames -contains 'Memory')) 'Overview/CPU/GPU/Memory tabs'
 
     $memTab = $tabControl.TabPages | Where-Object { $_.Text -eq 'Memory' } | Select-Object -First 1
     $lv = $memTab.Controls | Where-Object { $_ -is [System.Windows.Forms.ListView] } | Select-Object -First 1
@@ -39,6 +44,11 @@ try {
     $tb = $ovTab.Controls | Where-Object { $_ -is [System.Windows.Forms.TextBox] } | Select-Object -First 1
     Check ($null -ne $tb)                                 'Overview tab has a Notes textbox'
     Check ([bool]($tb.Text -match 'CPU is the limiter'))  'notes populated with insight'
+
+    $gpuTab = $tabControl.TabPages | Where-Object { $_.Text -eq 'GPU' } | Select-Object -First 1
+    $glv = $gpuTab.Controls | Where-Object { $_ -is [System.Windows.Forms.ListView] } | Select-Object -First 1
+    Check ($null -ne $glv)         'GPU tab has a ListView'
+    Check ($glv.Items.Count -eq 2) 'two GPU rows'
 
     $btns = @($form.Controls | Where-Object { $_ -is [System.Windows.Forms.Button] })
     Check ($btns.Count -eq 2)                                                  'two buttons'

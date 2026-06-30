@@ -258,6 +258,52 @@ function New-MemoryReport {
     }
 }
 
+function Get-GpuType {
+    # Classify a GPU as Integrated / Discrete / Unknown from its name + vendor.
+    param([string]$Name, [string]$Vendor)
+    $n = "$Name"; $v = "$Vendor"
+    if ($v -match 'NVIDIA' -or $n -match 'NVIDIA|GeForce|Quadro|Tesla|RTX|GTX') { return 'Discrete' }
+    if ($n -match '\bArc\b') { return 'Discrete' }                       # Intel Arc
+    if ($v -match 'Intel' -or $n -match 'Intel|UHD|Iris|HD Graphics')    { return 'Integrated' }
+    if ($n -match 'Radeon RX|Radeon Pro|FirePro|Radeon VII')            { return 'Discrete' }
+    if ($v -match 'AMD|Advanced Micro' -or $n -match 'Radeon|Vega')      { return 'Integrated' }
+    return 'Unknown'
+}
+
+function New-GpuReport {
+    # Build the Graphics section from raw per-GPU data (no CIM/registry here).
+    param([object[]] $Gpus = @(), [object] $Now = $null)
+    $nowDate = if ($Now -is [datetime]) { $Now } else { Get-Date }
+
+    $list = @(foreach ($g in $Gpus) {
+        $vramBytes = $null; $src = 'unknown'
+        if ($null -ne $g.RegistryVramBytes -and [double]$g.RegistryVramBytes -gt 0) { $vramBytes = [double]$g.RegistryVramBytes; $src = 'registry' }
+        elseif ($null -ne $g.AdapterRamBytes -and [double]$g.AdapterRamBytes -gt 0)  { $vramBytes = [double]$g.AdapterRamBytes;  $src = 'adapterRAM' }
+        $vramGB = if ($null -ne $vramBytes) { [math]::Round($vramBytes / 1GB, 1) } else { $null }
+
+        $type   = Get-GpuType -Name $g.Name -Vendor $g.Vendor
+        $status = switch ([int]$g.Availability) { 3 { 'Active' } 8 { 'Idle' } default { 'Unknown' } }
+        $res    = if ($g.ResH -and [int]$g.ResH -gt 0) { "$([int]$g.ResH)x$([int]$g.ResV)@$([int]$g.ResRefresh)" } else { '-' }
+        $age    = if ($g.DriverDate -is [datetime]) { ($nowDate.Year - $g.DriverDate.Year) * 12 + ($nowDate.Month - $g.DriverDate.Month) } else { $null }
+
+        [pscustomobject]@{
+            Name            = "$($g.Name)".Trim()
+            Vendor          = "$($g.Vendor)".Trim()
+            Type            = $type
+            VramGB          = $vramGB
+            VramSource      = $src
+            DriverVersion   = "$($g.DriverVersion)".Trim()
+            DriverDate      = $g.DriverDate
+            DriverAgeMonths = $age
+            Status          = $status
+            IsActive        = ([int]$g.Availability -eq 3)
+            IsDiscrete      = ($type -eq 'Discrete')
+            Resolution      = $res
+        }
+    })
+    [pscustomobject]@{ Gpus = $list }
+}
+
 # =====================================================================
 # Insights / bottlenecks (pure)
 # =====================================================================
@@ -336,9 +382,26 @@ function Get-CpuInsights {
     return , @($notes)
 }
 
+function Get-GpuInsights {
+    # GPU-only notes from the Graphics section.
+    param([object] $Gpu)
+    $notes = @()
+    foreach ($g in $Gpu.Gpus) {
+        if ($g.IsDiscrete -and -not $g.IsActive) {
+            $notes += [pscustomobject]@{ Kind = 'info'; Text = "$($g.Name) is present but idle; apps may default to the integrated GPU. For demanding work, select it in Windows Graphics settings or the vendor control panel." }
+        }
+    }
+    foreach ($g in $Gpu.Gpus) {
+        if ($null -ne $g.DriverAgeMonths -and [int]$g.DriverAgeMonths -gt 12) {
+            $notes += [pscustomobject]@{ Kind = 'info'; Text = "$($g.Name) driver is ~$($g.DriverAgeMonths) months old; consider updating." }
+        }
+    }
+    return , @($notes)
+}
+
 function Get-SystemInsights {
     # Orchestrator: per-subsystem notes plus cross-subsystem bottleneck notes.
-    param([object] $Cpu, [object] $Memory)
+    param([object] $Cpu, [object] $Memory, [object] $Gpu = $null)
     # Assign sub-results first (their ,@() returns unwrap to clean arrays), then
     # concatenate with +=. Wrapping the calls in @() here would nest each result
     # as a single sub-array element, merging multiple notes into one.
@@ -355,10 +418,20 @@ function Get-SystemInsights {
     $notes = @()
     $notes += $memNotes
     $notes += $cpuNotes
+    if ($null -ne $Gpu) {
+        $gpuNotes = Get-GpuInsights -Gpu $Gpu
+        $notes += $gpuNotes
+    }
 
     # Cross note: many cores starved by single-channel memory bandwidth.
     if ($Memory.PopulatedSlots -eq 1 -and $Memory.TotalSlots -ge 2 -and $null -ne $Cpu.Cores -and [int]$Cpu.Cores -ge 6) {
         $notes += [pscustomobject]@{ Kind = 'info'; Text = "$($Cpu.Cores) cores share single-channel memory bandwidth; moving to dual-channel would noticeably help multi-core workloads." }
+    }
+
+    # Cross note: integrated graphics starved by single-channel memory.
+    if ($null -ne $Gpu -and $Memory.PopulatedSlots -eq 1 -and $Memory.TotalSlots -ge 2 -and
+        @($Gpu.Gpus | Where-Object { $_.Type -eq 'Integrated' }).Count -gt 0) {
+        $notes += [pscustomobject]@{ Kind = 'warn'; Text = 'Integrated graphics share system memory; single-channel RAM notably limits iGPU performance - dual-channel would help.' }
     }
 
     return , @(@($notes) | Where-Object { $null -ne $_ })
@@ -369,12 +442,13 @@ function Get-SystemInsights {
 # =====================================================================
 
 function New-SystemReport {
-    # Compose the CPU + Memory sections and run the insight engine.
-    param([object] $Cpu, [object] $Memory)
-    $insights = Get-SystemInsights -Cpu $Cpu -Memory $Memory
+    # Compose the subsystem sections and run the insight engine.
+    param([object] $Cpu, [object] $Memory, [object] $Gpu = $null)
+    $insights = Get-SystemInsights -Cpu $Cpu -Memory $Memory -Gpu $Gpu
     [pscustomobject]@{
         Cpu      = $Cpu
         Memory   = $Memory
+        Gpu      = $Gpu
         Insights = $insights
     }
 }
@@ -419,6 +493,44 @@ function Get-CpuInfo {
         Socket = $c.SocketDesignation
         AddressWidth = $c.AddressWidth
         VirtualizationEnabled = $c.VirtualizationFirmwareEnabled
+    }
+}
+
+function Get-GpuVramMap {
+    # Map GPU DriverDesc -> dedicated VRAM bytes from the registry. This is the
+    # accurate source; Win32_VideoController.AdapterRAM is a 32-bit field capped
+    # at ~4 GB. Read-only HKLM access, no admin needed.
+    $map = @{}
+    $base = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}'
+    try {
+        Get-ChildItem $base -ErrorAction Stop | Where-Object { $_.PSChildName -match '^\d{4}$' } | ForEach-Object {
+            $p = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
+            $sz = $p.'HardwareInformation.qwMemorySize'
+            if ($p -and $p.DriverDesc -and $sz) {
+                $bytes = if ($sz -is [byte[]]) { [System.BitConverter]::ToUInt64($sz, 0) } else { [int64]$sz }
+                if ($bytes -gt 0) { $map["$($p.DriverDesc)"] = $bytes }
+            }
+        }
+    } catch { }
+    return $map
+}
+
+function Get-GpuInfo {
+    $vramMap = Get-GpuVramMap
+    Get-CimInstance Win32_VideoController -ErrorAction Stop | ForEach-Object {
+        $regVram = if ($vramMap.ContainsKey("$($_.Name)")) { $vramMap["$($_.Name)"] } else { $null }
+        [pscustomobject]@{
+            Name              = $_.Name
+            Vendor            = $_.AdapterCompatibility
+            AdapterRamBytes   = $_.AdapterRAM
+            RegistryVramBytes = $regVram
+            DriverVersion     = $_.DriverVersion
+            DriverDate        = $_.DriverDate
+            Availability      = $_.Availability
+            ResH              = $_.CurrentHorizontalResolution
+            ResV              = $_.CurrentVerticalResolution
+            ResRefresh        = $_.CurrentRefreshRate
+        }
     }
 }
 
@@ -472,6 +584,19 @@ function Write-SystemConsole {
                                 @{n='Part #';e={$_.Part}} |
         Out-String).TrimEnd()
     ''
+    if ($Report.Gpu -and @($Report.Gpu.Gpus).Count -gt 0) {
+        '  Graphics'
+        '  --------'
+        ($Report.Gpu.Gpus |
+            Format-Table -AutoSize @{n='GPU';e={$_.Name}},
+                                    @{n='Vendor';e={$_.Vendor}},
+                                    @{n='Type';e={$_.Type}},
+                                    @{n='VRAM';e={ if ($null -ne $_.VramGB) { "$($_.VramGB) GB" } else { 'Unknown' } }},
+                                    @{n='Driver';e={$_.DriverVersion}},
+                                    @{n='Status';e={$_.Status}} |
+            Out-String).TrimEnd()
+        ''
+    }
     if (@($Report.Insights).Count -gt 0) {
         '  Notes'
         '  -----'
@@ -506,6 +631,7 @@ function New-SystemForm {
     Add-Type -AssemblyName System.Drawing
     $cpu = $Report.Cpu
     $mem = $Report.Memory
+    $gpu = $Report.Gpu
     $maxCap   = if ($null -ne $mem.MaxCapacityGB) { "$($mem.MaxCapacityGB) GB" } else { 'Unknown' }
     $maxSpeed = if ($cpu.MaxMemKnown) { $cpu.MaxMemLabel } else { 'Unknown - see CPU/board spec' }
     $virt = if ($cpu.VirtualizationEnabled -eq $true) { 'Enabled' } elseif ($cpu.VirtualizationEnabled -eq $false) { 'Disabled' } else { 'Unknown' }
@@ -534,10 +660,13 @@ function New-SystemForm {
 
     $ovTop = New-Object System.Windows.Forms.Panel
     $ovTop.Dock = 'Top'
-    $ovTop.Height = 92
+    $ovTop.Height = 112
     $cpuLine = "$($cpu.Name)  -  $($cpu.Cores)C / $($cpu.Threads)T" + $(if ($cpu.Codename) { ", $($cpu.Codename)" } else { '' })
     $memLine = "$($mem.TotalInstalledGB) GB $($mem.TypeName)  -  $($mem.PopulatedSlots)/$($mem.TotalSlots) slots, max $maxCap"
-    $oy = Add-KvBlock -Parent $ovTop -Keys @('Processor:', 'Memory:') -Values @($cpuLine, $memLine) -X 4 -Y 6 -KeyW 90 -ValW 460
+    $gpuParts = @()
+    if ($null -ne $gpu) { foreach ($g in $gpu.Gpus) { $vr = if ($null -ne $g.VramGB) { " ($($g.VramGB) GB)" } else { '' }; $gpuParts += "$($g.Name)$vr" } }
+    $gpuLine = if ($gpuParts.Count) { $gpuParts -join '  +  ' } else { 'None detected' }
+    $oy = Add-KvBlock -Parent $ovTop -Keys @('Processor:', 'Graphics:', 'Memory:') -Values @($cpuLine, $gpuLine, $memLine) -X 4 -Y 6 -KeyW 90 -ValW 460
     $notesHeader = New-Object System.Windows.Forms.Label
     $notesHeader.Text = 'Notes / Bottlenecks:'
     $notesHeader.Location = New-Object System.Drawing.Point(4, ($oy + 2))
@@ -575,6 +704,42 @@ function New-SystemForm {
     )
     [void](Add-KvBlock -Parent $tabCpu -Keys $cpuKeys -Values $cpuVals -KeyW 150 -ValW 420)
     [void]$tabs.TabPages.Add($tabCpu)
+
+    # --- GPU tab ---
+    $tabGpu = New-Object System.Windows.Forms.TabPage
+    $tabGpu.Text = 'GPU'
+    $tabGpu.Padding = New-Object System.Windows.Forms.Padding(8, 8, 8, 8)
+    $glist = New-Object System.Windows.Forms.ListView
+    $glist.View = 'Details'; $glist.FullRowSelect = $true; $glist.GridLines = $true; $glist.Dock = 'Fill'
+    [void]$glist.Columns.Add('GPU', 230)
+    [void]$glist.Columns.Add('Vendor', 120)
+    [void]$glist.Columns.Add('Type', 85)
+    [void]$glist.Columns.Add('VRAM', 60)
+    [void]$glist.Columns.Add('Status', 60)
+    [void]$glist.Columns.Add('Driver', 110)
+    if ($null -ne $gpu) {
+        foreach ($g in $gpu.Gpus) {
+            $vram = if ($null -ne $g.VramGB) { "$($g.VramGB) GB" } else { 'Unknown' }
+            $item = New-Object System.Windows.Forms.ListViewItem([string]$g.Name)
+            [void]$item.SubItems.Add([string]$g.Vendor)
+            [void]$item.SubItems.Add([string]$g.Type)
+            [void]$item.SubItems.Add($vram)
+            [void]$item.SubItems.Add([string]$g.Status)
+            [void]$item.SubItems.Add([string]$g.DriverVersion)
+            [void]$glist.Items.Add($item)
+        }
+    }
+    $tabGpu.Controls.Add($glist)
+    # Let the GPU-name column (the primary identifier) absorb the slack width.
+    $gFill = {
+        $other = 0
+        for ($idx = 1; $idx -lt $glist.Columns.Count; $idx++) { $other += $glist.Columns[$idx].Width }
+        $f = $glist.ClientSize.Width - $other
+        if ($f -gt 150) { $glist.Columns[0].Width = $f }
+    }.GetNewClosure()
+    $glist.Add_Resize($gFill)
+    & $gFill
+    [void]$tabs.TabPages.Add($tabGpu)
 
     # --- Memory tab ---
     $tabMem = New-Object System.Windows.Forms.TabPage
@@ -665,6 +830,7 @@ function Invoke-SystemInfo {
         $array   = Get-RamArrayInfo
         $board   = Get-MotherboardInfo
         $cpuRaw  = Get-CpuInfo
+        $gpuRaw  = @(Get-GpuInfo)
     } catch {
         $err = "Couldn't read system info from Windows (CIM/WMI): $($_.Exception.Message)"
         if ($Console) { Write-Output $err; return }
@@ -693,7 +859,9 @@ function Invoke-SystemInfo {
                          -VirtualizationEnabled $cpuRaw.VirtualizationEnabled `
                          -MemoryType $memory.TypeName
 
-    $report = New-SystemReport -Cpu $cpu -Memory $memory
+    $gpu = New-GpuReport -Gpus $gpuRaw -Now (Get-Date)
+
+    $report = New-SystemReport -Cpu $cpu -Memory $memory -Gpu $gpu
 
     if ($Console) { Write-SystemConsole $report; return }
 

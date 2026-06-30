@@ -180,5 +180,55 @@ It 'report cpu'      { Assert-Equal 'Intel Core i7-10875H' $rep.Cpu.Name 'cpu' }
 It 'report mem'      { Assert-Equal 16 $rep.Memory.TotalInstalledGB 'mem' }
 It 'report insights' { Assert-Equal $true (@($rep.Insights).Count -gt 0) 'insights' }
 
+Write-Host "`nGet-GpuType" -ForegroundColor Cyan
+function GpuType($name, $vendor) { Get-GpuType -Name $name -Vendor $vendor }
+It 'gpu nvidia disc' { Assert-Equal 'Discrete'   (GpuType 'NVIDIA GeForce RTX 2060 with Max-Q Design' 'NVIDIA') 'nv' }
+It 'gpu intel integ' { Assert-Equal 'Integrated' (GpuType 'Intel(R) UHD Graphics' 'Intel Corporation') 'intel' }
+It 'gpu arc disc'    { Assert-Equal 'Discrete'   (GpuType 'Intel(R) Arc(TM) A770 Graphics' 'Intel Corporation') 'arc' }
+It 'gpu radeon rx'   { Assert-Equal 'Discrete'   (GpuType 'AMD Radeon RX 6800 XT' 'Advanced Micro Devices, Inc.') 'rx' }
+It 'gpu amd apu'     { Assert-Equal 'Integrated' (GpuType 'AMD Radeon(TM) Graphics' 'Advanced Micro Devices, Inc.') 'apu' }
+It 'gpu gtx disc'    { Assert-Equal 'Discrete'   (GpuType 'NVIDIA GeForce GTX 1650' 'NVIDIA') 'gtx' }
+It 'gpu unknown'     { Assert-Equal 'Unknown'    (GpuType 'Microsoft Basic Display Adapter' '') 'basic' }
+
+Write-Host "`nNew-GpuReport" -ForegroundColor Cyan
+$rawGpus = @(
+    [pscustomobject]@{ Name='NVIDIA GeForce RTX 2060 with Max-Q Design'; Vendor='NVIDIA'; AdapterRamBytes=4293918720; RegistryVramBytes=6442450944; DriverVersion='32.0.15.8180'; DriverDate=[datetime]'2025-10-28'; Availability=8; ResH=0; ResV=0; ResRefresh=0 }
+    [pscustomobject]@{ Name='Intel(R) UHD Graphics'; Vendor='Intel Corporation'; AdapterRamBytes=1073741824; RegistryVramBytes=$null; DriverVersion='31.0.101.2130'; DriverDate=[datetime]'2024-08-12'; Availability=3; ResH=1920; ResV=1200; ResRefresh=59 }
+)
+$now = [datetime]'2026-06-30'
+$gpu = New-GpuReport -Gpus $rawGpus -Now $now
+$nv = $gpu.Gpus[0]; $intel = $gpu.Gpus[1]
+It 'gpu count'         { Assert-Equal 2 $gpu.Gpus.Count 'two gpus' }
+It 'gpu nv vram reg'   { Assert-Equal 6 $nv.VramGB 'registry 6GB' }
+It 'gpu nv vram src'   { Assert-Equal 'registry' $nv.VramSource 'src' }
+It 'gpu nv type'       { Assert-Equal 'Discrete' $nv.Type 'disc' }
+It 'gpu nv status'     { Assert-Equal 'Idle' $nv.Status 'idle' }
+It 'gpu nv inactive'   { Assert-Equal $false $nv.IsActive 'inactive' }
+It 'gpu nv res dash'   { Assert-Equal '-' $nv.Resolution 'no res' }
+It 'gpu nv age'        { Assert-Equal 8 $nv.DriverAgeMonths 'nv age' }
+It 'gpu intel vram'    { Assert-Equal 1 $intel.VramGB 'adapterRAM 1GB' }
+It 'gpu intel vramsrc' { Assert-Equal 'adapterRAM' $intel.VramSource 'fallback' }
+It 'gpu intel type'    { Assert-Equal 'Integrated' $intel.Type 'integ' }
+It 'gpu intel status'  { Assert-Equal 'Active' $intel.Status 'active' }
+It 'gpu intel res'     { Assert-Equal '1920x1200@59' $intel.Resolution 'res' }
+It 'gpu intel age'     { Assert-Equal 22 $intel.DriverAgeMonths 'age' }
+
+Write-Host "`nGet-GpuInsights" -ForegroundColor Cyan
+$gi = Get-GpuInsights -Gpu $gpu
+It 'gpu inactive note' { Assert-Equal $true (HasNote $gi 'present but idle') 'inactive disc' }
+It 'gpu old driver'    { Assert-Equal $true (HasNote $gi 'months old') 'old drv' }
+$rawActive = @([pscustomobject]@{ Name='NVIDIA GeForce RTX 4090'; Vendor='NVIDIA'; AdapterRamBytes=4293918720; RegistryVramBytes=25769803776; DriverVersion='x'; DriverDate=[datetime]'2026-05-01'; Availability=3; ResH=3840; ResV=2160; ResRefresh=144 })
+$giActive = Get-GpuInsights -Gpu (New-GpuReport -Gpus $rawActive -Now $now)
+It 'gpu active no note' { Assert-Equal $false (HasNote $giActive 'present but idle') 'active disc' }
+It 'gpu recent no note' { Assert-Equal $false (HasNote $giActive 'months old') 'recent drv' }
+
+Write-Host "`nGet-SystemInsights (GPU cross note)" -ForegroundColor Cyan
+$sysGpuSingle = Get-SystemInsights -Cpu $cpuDev -Memory $memSingle -Gpu $gpu
+It 'igpu single-channel cross' { Assert-Equal $true  (HasNote $sysGpuSingle 'single-channel RAM notably limits') 'cross fires' }
+$sysGpuDual = Get-SystemInsights -Cpu $cpuDev -Memory $memDual -Gpu $gpu
+It 'igpu no cross dual'        { Assert-Equal $false (HasNote $sysGpuDual 'single-channel RAM notably limits') 'no cross dual' }
+$repGpu = New-SystemReport -Cpu $cpuDev -Memory $memDual -Gpu $gpu
+It 'report has gpu'           { Assert-Equal 2 $repGpu.Gpu.Gpus.Count 'gpu in report' }
+
 Write-Host "`n$script:Pass passed, $script:Fail failed`n"
 if ($script:Fail) { exit 1 } else { exit 0 }

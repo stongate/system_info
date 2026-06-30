@@ -230,5 +230,46 @@ It 'igpu no cross dual'        { Assert-Equal $false (HasNote $sysGpuDual 'singl
 $repGpu = New-SystemReport -Cpu $cpuDev -Memory $memDual -Gpu $gpu
 It 'report has gpu'           { Assert-Equal 2 $repGpu.Gpu.Gpus.Count 'gpu in report' }
 
+Write-Host "`nGet-DiskKind" -ForegroundColor Cyan
+function DiskKind($n, $m, $b) { Get-DiskKind -Name $n -MediaType $m -BusType $b }
+It 'disk nvme bus'    { Assert-Equal 'NVMe SSD' (DiskKind 'Samsung SSD 980' 'SSD' 'NVMe') 'nvme bus' }
+It 'disk nvme name'   { Assert-Equal 'NVMe SSD' (DiskKind 'NVMe PC611 NVMe SK hynix 512GB' 'SSD' 'RAID') 'nvme over raid' }
+It 'disk sata ssd'    { Assert-Equal 'SATA SSD' (DiskKind 'Crucial MX500' 'SSD' 'SATA') 'sata ssd' }
+It 'disk hdd'         { Assert-Equal 'HDD'      (DiskKind 'WDC WD10EZEX' 'HDD' 'SATA') 'hdd' }
+It 'disk mediatype 4' { Assert-Equal 'SATA SSD' (DiskKind 'X' '4' 'SATA') 'num ssd' }
+It 'disk unknown'     { Assert-Equal 'Unknown'  (DiskKind 'Some Disk' 'Unspecified' 'SATA') 'unknown' }
+
+Write-Host "`nNew-StorageReport" -ForegroundColor Cyan
+$rawDisks = @([pscustomobject]@{ Name='NVMe PC611 NVMe SK hynix 512GB'; MediaType='SSD'; BusType='RAID'; SizeBytes=549755813888; Health='Healthy'; IsBoot=$true })
+$rawVols  = @([pscustomobject]@{ DriveLetter='C'; Label='OS'; FileSystem='NTFS'; SizeBytes=515396075520; FreeBytes=103079215104 })
+$st = New-StorageReport -Disks $rawDisks -Volumes $rawVols
+$d0 = $st.Disks[0]; $v0 = $st.Volumes[0]
+It 'storage disk count' { Assert-Equal 1 $st.Disks.Count 'disks' }
+It 'storage disk kind'  { Assert-Equal 'NVMe SSD' $d0.Kind 'kind' }
+It 'storage disk boot'  { Assert-Equal $true $d0.IsBoot 'boot' }
+It 'storage disk size'  { Assert-Equal 512 $d0.SizeGB 'size' }
+It 'storage vol letter' { Assert-Equal 'C' $v0.DriveLetter 'letter' }
+It 'storage vol size'   { Assert-Equal 480 $v0.SizeGB 'vol size' }
+It 'storage vol free'   { Assert-Equal 96 $v0.FreeGB 'free' }
+It 'storage vol pct'    { Assert-Equal 20 $v0.FreePercent 'pct' }
+
+Write-Host "`nGet-StorageInsights" -ForegroundColor Cyan
+$giHealthy = Get-StorageInsights -Storage $st
+It 'storage no notes' { Assert-Equal 0 (@($giHealthy).Count) 'healthy nvme ample' }
+$stHdd = New-StorageReport -Disks @([pscustomobject]@{ Name='WDC WD10EZEX'; MediaType='HDD'; BusType='SATA'; SizeBytes=1000204886016; Health='Healthy'; IsBoot=$true }) -Volumes @([pscustomobject]@{ DriveLetter='C'; Label='OS'; FileSystem='NTFS'; SizeBytes=515396075520; FreeBytes=103079215104 })
+It 'storage boot hdd'  { Assert-Equal $true (HasNote (Get-StorageInsights -Storage $stHdd) 'mechanical hard drive') 'boot hdd' }
+$stLow = New-StorageReport -Disks @([pscustomobject]@{ Name='NVMe X'; MediaType='SSD'; BusType='NVMe'; SizeBytes=549755813888; Health='Healthy'; IsBoot=$true }) -Volumes @([pscustomobject]@{ DriveLetter='C'; Label='OS'; FileSystem='NTFS'; SizeBytes=515396075520; FreeBytes=21474836480 })
+It 'storage low space' { Assert-Equal $true (HasNote (Get-StorageInsights -Storage $stLow) 'low on space') 'low space' }
+$stSick = New-StorageReport -Disks @([pscustomobject]@{ Name='NVMe X'; MediaType='SSD'; BusType='NVMe'; SizeBytes=549755813888; Health='Warning'; IsBoot=$true }) -Volumes @()
+It 'storage unhealthy' { Assert-Equal $true (HasNote (Get-StorageInsights -Storage $stSick) "reports health 'Warning'") 'health' }
+$stSata = New-StorageReport -Disks @([pscustomobject]@{ Name='Crucial MX500'; MediaType='SSD'; BusType='SATA'; SizeBytes=549755813888; Health='Healthy'; IsBoot=$true }) -Volumes @([pscustomobject]@{ DriveLetter='C'; Label='OS'; FileSystem='NTFS'; SizeBytes=515396075520; FreeBytes=103079215104 })
+It 'storage sata hint' { Assert-Equal $true (HasNote (Get-StorageInsights -Storage $stSata) 'NVMe SSD is several times faster') 'sata hint' }
+
+Write-Host "`nSystem report (Storage wiring)" -ForegroundColor Cyan
+$sysStorage = Get-SystemInsights -Cpu $cpuDev -Memory $memDual -Gpu $gpu -Storage $stHdd
+It 'sys has storage note' { Assert-Equal $true (HasNote $sysStorage 'mechanical hard drive') 'storage in sys' }
+$repFull = New-SystemReport -Cpu $cpuDev -Memory $memDual -Gpu $gpu -Storage $st
+It 'report has storage'   { Assert-Equal 1 $repFull.Storage.Disks.Count 'storage in report' }
+
 Write-Host "`n$script:Pass passed, $script:Fail failed`n"
 if ($script:Fail) { exit 1 } else { exit 0 }

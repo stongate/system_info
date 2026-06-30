@@ -304,6 +304,50 @@ function New-GpuReport {
     [pscustomobject]@{ Gpus = $list }
 }
 
+function Get-DiskKind {
+    # Classify a disk as NVMe SSD / SATA SSD / HDD / Unknown. Detects NVMe from
+    # the name too, since Intel RST exposes NVMe drives with BusType 'RAID'.
+    param([string]$Name, [string]$MediaType, [string]$BusType)
+    $isNvme = ($BusType -match 'NVMe') -or ($Name -match 'NVMe')
+    $isSsd  = ($MediaType -match 'SSD') -or ("$MediaType" -eq '4')
+    $isHdd  = ($MediaType -match 'HDD') -or ("$MediaType" -eq '3')
+    if ($isSsd)  { return $(if ($isNvme) { 'NVMe SSD' } else { 'SATA SSD' }) }
+    if ($isHdd)  { return 'HDD' }
+    if ($isNvme) { return 'NVMe SSD' }
+    return 'Unknown'
+}
+
+function New-StorageReport {
+    # Build the Storage section from raw disk + volume data (no cmdlets here).
+    param([object[]] $Disks = @(), [object[]] $Volumes = @())
+
+    $diskList = @(foreach ($d in $Disks) {
+        [pscustomobject]@{
+            Name      = "$($d.Name)".Trim()
+            Kind      = Get-DiskKind -Name $d.Name -MediaType $d.MediaType -BusType $d.BusType
+            SizeGB    = if ($d.SizeBytes) { [math]::Round([double]$d.SizeBytes / 1GB, 0) } else { $null }
+            Health    = if ([string]::IsNullOrWhiteSpace($d.Health)) { 'Unknown' } else { "$($d.Health)".Trim() }
+            IsBoot    = [bool]$d.IsBoot
+            MediaType = "$($d.MediaType)"
+            Bus       = "$($d.BusType)"
+        }
+    })
+
+    $volList = @(foreach ($v in $Volumes) {
+        $pct = if ($v.SizeBytes -and [double]$v.SizeBytes -gt 0) { [math]::Round([double]$v.FreeBytes / [double]$v.SizeBytes * 100, 0) } else { $null }
+        [pscustomobject]@{
+            DriveLetter = "$($v.DriveLetter)".Trim()
+            Label       = "$($v.Label)".Trim()
+            FileSystem  = "$($v.FileSystem)".Trim()
+            SizeGB      = if ($v.SizeBytes) { [math]::Round([double]$v.SizeBytes / 1GB, 1) } else { $null }
+            FreeGB      = if ($v.FreeBytes) { [math]::Round([double]$v.FreeBytes / 1GB, 1) } else { $null }
+            FreePercent = $pct
+        }
+    })
+
+    [pscustomobject]@{ Disks = $diskList; Volumes = $volList }
+}
+
 # =====================================================================
 # Insights / bottlenecks (pure)
 # =====================================================================
@@ -399,9 +443,32 @@ function Get-GpuInsights {
     return , @($notes)
 }
 
+function Get-StorageInsights {
+    # Storage health/space notes from the Storage section.
+    param([object] $Storage)
+    $notes = @()
+    foreach ($d in $Storage.Disks) {
+        if ($d.IsBoot -and $d.Kind -eq 'HDD') {
+            $notes += [pscustomobject]@{ Kind = 'warn'; Text = 'Windows is installed on a mechanical hard drive - the single biggest slowdown on an otherwise capable PC. Moving to an SSD would transform responsiveness.' }
+        }
+        if ($d.IsBoot -and $d.Kind -eq 'SATA SSD') {
+            $notes += [pscustomobject]@{ Kind = 'info'; Text = "Boot drive ($($d.Name)) is a SATA SSD; an NVMe SSD is several times faster if your system has an M.2 NVMe slot." }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($d.Health) -and $d.Health -ne 'Healthy' -and $d.Health -ne 'Unknown') {
+            $notes += [pscustomobject]@{ Kind = 'warn'; Text = "Disk $($d.Name) reports health '$($d.Health)' - back up your data and run a check (e.g. CrystalDiskInfo or the maker's tool)." }
+        }
+    }
+    foreach ($v in $Storage.Volumes) {
+        if ($null -ne $v.FreePercent -and ([double]$v.FreePercent -lt 10 -or [double]$v.FreeGB -lt 25)) {
+            $notes += [pscustomobject]@{ Kind = 'warn'; Text = "Drive $($v.DriveLetter): is low on space ($($v.FreeGB) GB free, $($v.FreePercent)%). Free up space - drives slow down and Windows struggles when nearly full." }
+        }
+    }
+    return , @($notes)
+}
+
 function Get-SystemInsights {
     # Orchestrator: per-subsystem notes plus cross-subsystem bottleneck notes.
-    param([object] $Cpu, [object] $Memory, [object] $Gpu = $null)
+    param([object] $Cpu, [object] $Memory, [object] $Gpu = $null, [object] $Storage = $null)
     # Assign sub-results first (their ,@() returns unwrap to clean arrays), then
     # concatenate with +=. Wrapping the calls in @() here would nest each result
     # as a single sub-array element, merging multiple notes into one.
@@ -421,6 +488,10 @@ function Get-SystemInsights {
     if ($null -ne $Gpu) {
         $gpuNotes = Get-GpuInsights -Gpu $Gpu
         $notes += $gpuNotes
+    }
+    if ($null -ne $Storage) {
+        $storageNotes = Get-StorageInsights -Storage $Storage
+        $notes += $storageNotes
     }
 
     # Cross note: many cores starved by single-channel memory bandwidth.
@@ -443,12 +514,13 @@ function Get-SystemInsights {
 
 function New-SystemReport {
     # Compose the subsystem sections and run the insight engine.
-    param([object] $Cpu, [object] $Memory, [object] $Gpu = $null)
-    $insights = Get-SystemInsights -Cpu $Cpu -Memory $Memory -Gpu $Gpu
+    param([object] $Cpu, [object] $Memory, [object] $Gpu = $null, [object] $Storage = $null)
+    $insights = Get-SystemInsights -Cpu $Cpu -Memory $Memory -Gpu $Gpu -Storage $Storage
     [pscustomobject]@{
         Cpu      = $Cpu
         Memory   = $Memory
         Gpu      = $Gpu
+        Storage  = $Storage
         Insights = $insights
     }
 }
@@ -534,6 +606,35 @@ function Get-GpuInfo {
     }
 }
 
+function Get-StorageInfo {
+    # Physical disks (+ which is the boot disk) and volumes, via the Storage
+    # cmdlets. Wrapped so a missing module degrades gracefully.
+    $disks = @(); $vols = @()
+    try {
+        $bootNums = @(Get-Disk -ErrorAction Stop | Where-Object { $_.IsBoot } | ForEach-Object { "$($_.Number)" })
+        $disks = @(Get-PhysicalDisk -ErrorAction Stop | ForEach-Object {
+            [pscustomobject]@{
+                Name      = $_.FriendlyName
+                MediaType = "$($_.MediaType)"
+                BusType   = "$($_.BusType)"
+                SizeBytes = $_.Size
+                Health    = "$($_.HealthStatus)"
+                IsBoot    = ($bootNums -contains "$($_.DeviceId)")
+            }
+        })
+        $vols = @(Get-Volume -ErrorAction Stop | Where-Object { $_.DriveLetter } | ForEach-Object {
+            [pscustomobject]@{
+                DriveLetter = $_.DriveLetter
+                Label       = $_.FileSystemLabel
+                FileSystem  = $_.FileSystemType
+                SizeBytes   = $_.Size
+                FreeBytes   = $_.SizeRemaining
+            }
+        })
+    } catch { }
+    [pscustomobject]@{ Disks = $disks; Volumes = $vols }
+}
+
 # =====================================================================
 # Renderers
 # =====================================================================
@@ -597,6 +698,30 @@ function Write-SystemConsole {
             Out-String).TrimEnd()
         ''
     }
+    if ($Report.Storage -and (@($Report.Storage.Disks).Count -gt 0 -or @($Report.Storage.Volumes).Count -gt 0)) {
+        '  Storage'
+        '  -------'
+        if (@($Report.Storage.Disks).Count -gt 0) {
+            ($Report.Storage.Disks |
+                Format-Table -AutoSize @{n='Disk';e={$_.Name}},
+                                        @{n='Type';e={$_.Kind}},
+                                        @{n='Size';e={ if ($null -ne $_.SizeGB) { "$($_.SizeGB) GB" } else { '?' } }},
+                                        @{n='Health';e={$_.Health}},
+                                        @{n='Boot';e={ if ($_.IsBoot) { 'Yes' } else { '' } }} |
+                Out-String).TrimEnd()
+        }
+        if (@($Report.Storage.Volumes).Count -gt 0) {
+            ($Report.Storage.Volumes |
+                Format-Table -AutoSize @{n='Drive';e={"$($_.DriveLetter):"}},
+                                        @{n='Label';e={$_.Label}},
+                                        @{n='FS';e={$_.FileSystem}},
+                                        @{n='Size';e={ if ($null -ne $_.SizeGB) { "$($_.SizeGB) GB" } else { '?' } }},
+                                        @{n='Free';e={ if ($null -ne $_.FreeGB) { "$($_.FreeGB) GB" } else { '?' } }},
+                                        @{n='Free%';e={ if ($null -ne $_.FreePercent) { "$($_.FreePercent)%" } else { '?' } }} |
+                Out-String).TrimEnd()
+        }
+        ''
+    }
     if (@($Report.Insights).Count -gt 0) {
         '  Notes'
         '  -----'
@@ -632,6 +757,7 @@ function New-SystemForm {
     $cpu = $Report.Cpu
     $mem = $Report.Memory
     $gpu = $Report.Gpu
+    $st  = $Report.Storage
     $maxCap   = if ($null -ne $mem.MaxCapacityGB) { "$($mem.MaxCapacityGB) GB" } else { 'Unknown' }
     $maxSpeed = if ($cpu.MaxMemKnown) { $cpu.MaxMemLabel } else { 'Unknown - see CPU/board spec' }
     $virt = if ($cpu.VirtualizationEnabled -eq $true) { 'Enabled' } elseif ($cpu.VirtualizationEnabled -eq $false) { 'Disabled' } else { 'Unknown' }
@@ -660,13 +786,18 @@ function New-SystemForm {
 
     $ovTop = New-Object System.Windows.Forms.Panel
     $ovTop.Dock = 'Top'
-    $ovTop.Height = 112
+    $ovTop.Height = 134
     $cpuLine = "$($cpu.Name)  -  $($cpu.Cores)C / $($cpu.Threads)T" + $(if ($cpu.Codename) { ", $($cpu.Codename)" } else { '' })
     $memLine = "$($mem.TotalInstalledGB) GB $($mem.TypeName)  -  $($mem.PopulatedSlots)/$($mem.TotalSlots) slots, max $maxCap"
     $gpuParts = @()
     if ($null -ne $gpu) { foreach ($g in $gpu.Gpus) { $vr = if ($null -ne $g.VramGB) { " ($($g.VramGB) GB)" } else { '' }; $gpuParts += "$($g.Name)$vr" } }
     $gpuLine = if ($gpuParts.Count) { $gpuParts -join '  +  ' } else { 'None detected' }
-    $oy = Add-KvBlock -Parent $ovTop -Keys @('Processor:', 'Graphics:', 'Memory:') -Values @($cpuLine, $gpuLine, $memLine) -X 4 -Y 6 -KeyW 90 -ValW 460
+    $bootDisk = if ($null -ne $st) { @($st.Disks | Where-Object { $_.IsBoot }) | Select-Object -First 1 } else { $null }
+    $sysVol   = if ($null -ne $st) { @($st.Volumes | Where-Object { $_.DriveLetter -eq 'C' }) | Select-Object -First 1 } else { $null }
+    $storageLine = if ($bootDisk) {
+        "$($bootDisk.SizeGB) GB $($bootDisk.Kind)" + $(if ($sysVol) { "  -  $($sysVol.FreeGB) GB free on $($sysVol.DriveLetter):" } else { '' })
+    } elseif ($null -ne $st -and @($st.Disks).Count) { "$(@($st.Disks).Count) disk(s)" } else { 'Unknown' }
+    $oy = Add-KvBlock -Parent $ovTop -Keys @('Processor:', 'Graphics:', 'Memory:', 'Storage:') -Values @($cpuLine, $gpuLine, $memLine, $storageLine) -X 4 -Y 6 -KeyW 90 -ValW 460
     $notesHeader = New-Object System.Windows.Forms.Label
     $notesHeader.Text = 'Notes / Bottlenecks:'
     $notesHeader.Location = New-Object System.Drawing.Point(4, ($oy + 2))
@@ -784,6 +915,66 @@ function New-SystemForm {
     & $fillLastColumn
     [void]$tabs.TabPages.Add($tabMem)
 
+    # --- Storage tab (disks table on top, volumes table below) ---
+    $tabStorage = New-Object System.Windows.Forms.TabPage
+    $tabStorage.Text = 'Storage'
+    $tabStorage.Padding = New-Object System.Windows.Forms.Padding(8, 8, 8, 8)
+
+    $diskPanel = New-Object System.Windows.Forms.Panel
+    $diskPanel.Dock = 'Top'; $diskPanel.Height = 150
+    $diskLbl = New-Object System.Windows.Forms.Label
+    $diskLbl.Text = 'Disks'; $diskLbl.Dock = 'Top'; $diskLbl.Height = 18
+    $diskList = New-Object System.Windows.Forms.ListView
+    $diskList.View = 'Details'; $diskList.FullRowSelect = $true; $diskList.GridLines = $true; $diskList.Dock = 'Fill'
+    [void]$diskList.Columns.Add('Disk', 230)
+    [void]$diskList.Columns.Add('Type', 90)
+    [void]$diskList.Columns.Add('Size', 80)
+    [void]$diskList.Columns.Add('Health', 80)
+    [void]$diskList.Columns.Add('Boot', 50)
+    if ($null -ne $st) {
+        foreach ($d in $st.Disks) {
+            $item = New-Object System.Windows.Forms.ListViewItem([string]$d.Name)
+            [void]$item.SubItems.Add([string]$d.Kind)
+            [void]$item.SubItems.Add($(if ($null -ne $d.SizeGB) { "$($d.SizeGB) GB" } else { '?' }))
+            [void]$item.SubItems.Add([string]$d.Health)
+            [void]$item.SubItems.Add($(if ($d.IsBoot) { 'Yes' } else { '' }))
+            [void]$diskList.Items.Add($item)
+        }
+    }
+    $diskPanel.Controls.Add($diskList)
+    $diskPanel.Controls.Add($diskLbl)
+    $dFill = { $o = 0; for ($i = 1; $i -lt $diskList.Columns.Count; $i++) { $o += $diskList.Columns[$i].Width }; $f = $diskList.ClientSize.Width - $o; if ($f -gt 150) { $diskList.Columns[0].Width = $f } }.GetNewClosure()
+    $diskList.Add_Resize($dFill); & $dFill
+
+    $volLbl = New-Object System.Windows.Forms.Label
+    $volLbl.Text = 'Volumes'; $volLbl.Dock = 'Top'; $volLbl.Height = 18
+    $volList = New-Object System.Windows.Forms.ListView
+    $volList.View = 'Details'; $volList.FullRowSelect = $true; $volList.GridLines = $true; $volList.Dock = 'Fill'
+    [void]$volList.Columns.Add('Drive', 60)
+    [void]$volList.Columns.Add('Label', 150)
+    [void]$volList.Columns.Add('FS', 70)
+    [void]$volList.Columns.Add('Size', 90)
+    [void]$volList.Columns.Add('Free', 90)
+    [void]$volList.Columns.Add('Free %', 60)
+    if ($null -ne $st) {
+        foreach ($v in $st.Volumes) {
+            $item = New-Object System.Windows.Forms.ListViewItem("$($v.DriveLetter):")
+            [void]$item.SubItems.Add([string]$v.Label)
+            [void]$item.SubItems.Add([string]$v.FileSystem)
+            [void]$item.SubItems.Add($(if ($null -ne $v.SizeGB) { "$($v.SizeGB) GB" } else { '?' }))
+            [void]$item.SubItems.Add($(if ($null -ne $v.FreeGB) { "$($v.FreeGB) GB" } else { '?' }))
+            [void]$item.SubItems.Add($(if ($null -ne $v.FreePercent) { "$($v.FreePercent)%" } else { '?' }))
+            [void]$volList.Items.Add($item)
+        }
+    }
+    $vFill = { $o = 0; for ($i = 0; $i -lt $volList.Columns.Count; $i++) { if ($i -ne 1) { $o += $volList.Columns[$i].Width } }; $f = $volList.ClientSize.Width - $o; if ($f -gt 100) { $volList.Columns[1].Width = $f } }.GetNewClosure()
+    $volList.Add_Resize($vFill); & $vFill
+
+    $tabStorage.Controls.Add($volList)    # Fill (innermost)
+    $tabStorage.Controls.Add($volLbl)     # Top
+    $tabStorage.Controls.Add($diskPanel)  # Top (outermost = very top)
+    [void]$tabs.TabPages.Add($tabStorage)
+
     $form.Controls.Add($tabs)
 
     # --- Buttons (below tabs, always visible) ---
@@ -831,6 +1022,7 @@ function Invoke-SystemInfo {
         $board   = Get-MotherboardInfo
         $cpuRaw  = Get-CpuInfo
         $gpuRaw  = @(Get-GpuInfo)
+        $stRaw   = Get-StorageInfo
     } catch {
         $err = "Couldn't read system info from Windows (CIM/WMI): $($_.Exception.Message)"
         if ($Console) { Write-Output $err; return }
@@ -860,8 +1052,9 @@ function Invoke-SystemInfo {
                          -MemoryType $memory.TypeName
 
     $gpu = New-GpuReport -Gpus $gpuRaw -Now (Get-Date)
+    $storage = New-StorageReport -Disks $stRaw.Disks -Volumes $stRaw.Volumes
 
-    $report = New-SystemReport -Cpu $cpu -Memory $memory -Gpu $gpu
+    $report = New-SystemReport -Cpu $cpu -Memory $memory -Gpu $gpu -Storage $storage
 
     if ($Console) { Write-SystemConsole $report; return }
 

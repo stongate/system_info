@@ -23,7 +23,10 @@ $rawGpus = @(
     [pscustomobject]@{ Name='Intel(R) UHD Graphics'; Vendor='Intel Corporation'; AdapterRamBytes=1073741824; RegistryVramBytes=$null; DriverVersion='31.0.101.2130'; DriverDate=[datetime]'2024-08-12'; Availability=3; ResH=1920; ResV=1200; ResRefresh=59 }
 )
 $gpu = New-GpuReport -Gpus $rawGpus -Now ([datetime]'2026-06-30')
-$report = New-SystemReport -Cpu $cpu -Memory $mem -Gpu $gpu
+$rawDisks = @([pscustomobject]@{ Name='NVMe PC611 NVMe SK hynix 512GB'; MediaType='SSD'; BusType='RAID'; SizeBytes=549755813888; Health='Healthy'; IsBoot=$true })
+$rawVols  = @([pscustomobject]@{ DriveLetter='C'; Label='OS'; FileSystem='NTFS'; SizeBytes=515396075520; FreeBytes=103079215104 })
+$st = New-StorageReport -Disks $rawDisks -Volumes $rawVols
+$report = New-SystemReport -Cpu $cpu -Memory $mem -Gpu $gpu -Storage $st
 
 try {
     $form = New-SystemForm $report
@@ -31,9 +34,9 @@ try {
     Check ($form.Text -eq 'System Info')            'window title'
     $tabControl = $form.Controls | Where-Object { $_ -is [System.Windows.Forms.TabControl] } | Select-Object -First 1
     Check ($null -ne $tabControl)            'has a TabControl'
-    Check ($tabControl.TabPages.Count -eq 4) 'four tabs'
+    Check ($tabControl.TabPages.Count -eq 5) 'five tabs'
     $tabNames = @($tabControl.TabPages | ForEach-Object { $_.Text })
-    Check (($tabNames -contains 'Overview') -and ($tabNames -contains 'CPU') -and ($tabNames -contains 'GPU') -and ($tabNames -contains 'Memory')) 'Overview/CPU/GPU/Memory tabs'
+    Check (($tabNames -contains 'Overview') -and ($tabNames -contains 'CPU') -and ($tabNames -contains 'GPU') -and ($tabNames -contains 'Memory') -and ($tabNames -contains 'Storage')) 'Overview/CPU/GPU/Memory/Storage tabs'
 
     $memTab = $tabControl.TabPages | Where-Object { $_.Text -eq 'Memory' } | Select-Object -First 1
     $lv = $memTab.Controls | Where-Object { $_ -is [System.Windows.Forms.ListView] } | Select-Object -First 1
@@ -49,6 +52,14 @@ try {
     $glv = $gpuTab.Controls | Where-Object { $_ -is [System.Windows.Forms.ListView] } | Select-Object -First 1
     Check ($null -ne $glv)         'GPU tab has a ListView'
     Check ($glv.Items.Count -eq 2) 'two GPU rows'
+
+    $storTab = $tabControl.TabPages | Where-Object { $_.Text -eq 'Storage' } | Select-Object -First 1
+    $storLvs = @()
+    foreach ($c in $storTab.Controls) {
+        if ($c -is [System.Windows.Forms.ListView]) { $storLvs += $c }
+        foreach ($cc in $c.Controls) { if ($cc -is [System.Windows.Forms.ListView]) { $storLvs += $cc } }
+    }
+    Check ($storLvs.Count -eq 2) 'Storage tab has disks + volumes tables'
 
     $btns = @($form.Controls | Where-Object { $_ -is [System.Windows.Forms.Button] })
     Check ($btns.Count -eq 2)                                                  'two buttons'

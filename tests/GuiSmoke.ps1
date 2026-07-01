@@ -26,7 +26,19 @@ $gpu = New-GpuReport -Gpus $rawGpus -Now ([datetime]'2026-06-30')
 $rawDisks = @([pscustomobject]@{ Name='NVMe PC611 NVMe SK hynix 512GB'; MediaType='SSD'; BusType='RAID'; SizeBytes=549755813888; Health='Healthy'; IsBoot=$true })
 $rawVols  = @([pscustomobject]@{ DriveLetter='C'; Label='OS'; FileSystem='NTFS'; SizeBytes=515396075520; FreeBytes=103079215104 })
 $st = New-StorageReport -Disks $rawDisks -Volumes $rawVols
-$report = New-SystemReport -Cpu $cpu -Memory $mem -Gpu $gpu -Storage $st
+$bat = New-BatteryReport -ChargePercent 100 -IsOnAC $true -IsCharging $false -DesignCapacityMWh 95065 -FullChargeCapacityMWh 52166 -CycleCount 0 -Chemistry 'LiP' -Manufacturer 'SMP' -PowerPlan 'Balanced' -PowerPlanGuid '381b4222-f694-41f0-9685-ff5bb260df2e'
+$report = New-SystemReport -Cpu $cpu -Memory $mem -Gpu $gpu -Storage $st -Battery $bat
+$reportNoBat = New-SystemReport -Cpu $cpu -Memory $mem -Gpu $gpu -Storage $st
+
+# recursively collect all control text (labels, textboxes) under a control
+function Get-AllText($ctrl) {
+    $acc = @()
+    foreach ($c in $ctrl.Controls) {
+        if ($c.Text) { $acc += $c.Text }
+        $acc += Get-AllText $c
+    }
+    $acc
+}
 
 try {
     $form = New-SystemForm $report
@@ -34,9 +46,9 @@ try {
     Check ($form.Text -eq 'System Info')            'window title'
     $tabControl = $form.Controls | Where-Object { $_ -is [System.Windows.Forms.TabControl] } | Select-Object -First 1
     Check ($null -ne $tabControl)            'has a TabControl'
-    Check ($tabControl.TabPages.Count -eq 5) 'five tabs'
+    Check ($tabControl.TabPages.Count -eq 6) 'six tabs'
     $tabNames = @($tabControl.TabPages | ForEach-Object { $_.Text })
-    Check (($tabNames -contains 'Overview') -and ($tabNames -contains 'CPU') -and ($tabNames -contains 'GPU') -and ($tabNames -contains 'Memory') -and ($tabNames -contains 'Storage')) 'Overview/CPU/GPU/Memory/Storage tabs'
+    Check (($tabNames -contains 'Overview') -and ($tabNames -contains 'CPU') -and ($tabNames -contains 'GPU') -and ($tabNames -contains 'Memory') -and ($tabNames -contains 'Storage') -and ($tabNames -contains 'Battery')) 'Overview/CPU/GPU/Memory/Storage/Battery tabs'
 
     $memTab = $tabControl.TabPages | Where-Object { $_.Text -eq 'Memory' } | Select-Object -First 1
     $lv = $memTab.Controls | Where-Object { $_ -is [System.Windows.Forms.ListView] } | Select-Object -First 1
@@ -60,6 +72,28 @@ try {
         foreach ($cc in $c.Controls) { if ($cc -is [System.Windows.Forms.ListView]) { $storLvs += $cc } }
     }
     Check ($storLvs.Count -eq 2) 'Storage tab has disks + volumes tables'
+
+    $batTab = $tabControl.TabPages | Where-Object { $_.Text -eq 'Battery' } | Select-Object -First 1
+    Check ($null -ne $batTab) 'has Battery tab'
+    $batText = (Get-AllText $batTab) -join "`n"
+    Check ([bool]($batText -match 'Cycle count'))  'Battery tab has KV labels'
+    Check ([bool]($batText -match '95,065 mWh'))   'Battery tab shows design capacity'
+    Check ([bool]($batText -match '45% worn'))     'Battery tab shows wear'
+
+    $ovText = (Get-AllText $ovTab) -join "`n"
+    Check ([bool]($ovText -match 'Battery:'))       'Overview has a Battery line'
+    Check ([bool]($ovText -match '45% worn'))       'Overview battery line shows wear'
+
+    # No-battery (desktop) case: no Battery tab; Overview says 'none (AC only)'.
+    $form2 = New-SystemForm $reportNoBat
+    $tc2 = $form2.Controls | Where-Object { $_ -is [System.Windows.Forms.TabControl] } | Select-Object -First 1
+    $names2 = @($tc2.TabPages | ForEach-Object { $_.Text })
+    Check ($tc2.TabPages.Count -eq 5)          'desktop: five tabs (no Battery)'
+    Check (-not ($names2 -contains 'Battery')) 'desktop: no Battery tab'
+    $ov2 = $tc2.TabPages | Where-Object { $_.Text -eq 'Overview' } | Select-Object -First 1
+    $ov2Text = (Get-AllText $ov2) -join "`n"
+    Check ([bool]($ov2Text -match 'none \(AC only\)')) 'desktop: Overview shows none (AC only)'
+    $form2.Dispose()
 
     $btns = @($form.Controls | Where-Object { $_ -is [System.Windows.Forms.Button] })
     Check ($btns.Count -eq 2)                                                  'two buttons'

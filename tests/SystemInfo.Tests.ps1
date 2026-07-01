@@ -271,5 +271,122 @@ It 'sys has storage note' { Assert-Equal $true (HasNote $sysStorage 'mechanical 
 $repFull = New-SystemReport -Cpu $cpuDev -Memory $memDual -Gpu $gpu -Storage $st
 It 'report has storage'   { Assert-Equal 1 $repFull.Storage.Disks.Count 'storage in report' }
 
+# =====================================================================
+# Battery / power (slice D)
+# =====================================================================
+
+Write-Host "`nConvertFrom-BatteryReportXml" -ForegroundColor Cyan
+# Faithful compact fixture: the RuntimeEstimates/DesignCapacity element wraps
+# <Capacity> + runtime text, so a naive //DesignCapacity yields '95065PT4H33M44S'.
+# The parser must scope to Batteries/Battery.
+$battXml = @'
+<?xml version="1.0" encoding="utf-8"?>
+<BatteryReport xmlns="http://schemas.microsoft.com/battery/2012">
+  <Batteries>
+    <Battery>
+      <Id>DELL 01RR3YM</Id>
+      <Manufacturer>SMP</Manufacturer>
+      <SerialNumber>1857</SerialNumber>
+      <ManufactureDate></ManufactureDate>
+      <Chemistry>LiP</Chemistry>
+      <LongTerm>1</LongTerm>
+      <RelativeCapacity>0</RelativeCapacity>
+      <DesignCapacity>95065</DesignCapacity>
+      <FullChargeCapacity>52166</FullChargeCapacity>
+      <CycleCount>0</CycleCount>
+    </Battery>
+  </Batteries>
+  <RuntimeEstimates>
+    <DesignCapacity>
+      <Capacity>95065</Capacity>
+      <ActiveRuntime>PT4H33M44S</ActiveRuntime>
+    </DesignCapacity>
+    <FullChargeCapacity>
+      <Capacity>52166</Capacity>
+      <ActiveRuntime>PT2H30M12S</ActiveRuntime>
+    </FullChargeCapacity>
+  </RuntimeEstimates>
+</BatteryReport>
+'@
+$bp = ConvertFrom-BatteryReportXml -Xml $battXml
+It 'batt xml design'  { Assert-Equal 95065 $bp.DesignCapacityMWh 'design cap (not the runtime-estimate node)' }
+It 'batt xml full'    { Assert-Equal 52166 $bp.FullChargeCapacityMWh 'full cap' }
+It 'batt xml cycles'  { Assert-Equal 0     $bp.CycleCount 'cycles' }
+It 'batt xml chem'    { Assert-Equal 'LiP' $bp.Chemistry 'chemistry' }
+It 'batt xml maker'   { Assert-Equal 'SMP' $bp.Manufacturer 'manufacturer' }
+It 'batt xml empty'   { Assert-Equal $null (ConvertFrom-BatteryReportXml -Xml '').DesignCapacityMWh 'empty -> null' }
+It 'batt xml garbage' { Assert-Equal $null (ConvertFrom-BatteryReportXml -Xml 'not xml').FullChargeCapacityMWh 'garbage -> null' }
+
+Write-Host "`nConvertFrom-ActiveScheme" -ForegroundColor Cyan
+$schBal = ConvertFrom-ActiveScheme -Text 'Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)'
+It 'scheme bal guid'  { Assert-Equal '381b4222-f694-41f0-9685-ff5bb260df2e' $schBal.Guid 'balanced guid' }
+It 'scheme bal name'  { Assert-Equal 'Balanced' $schBal.Name 'balanced name' }
+$schSaver = ConvertFrom-ActiveScheme -Text 'Power Scheme GUID: a1841308-3541-4fab-bc81-f71556f20b4a  (Power saver)'
+It 'scheme saver guid' { Assert-Equal 'a1841308-3541-4fab-bc81-f71556f20b4a' $schSaver.Guid 'saver guid' }
+It 'scheme saver name' { Assert-Equal 'Power saver' $schSaver.Name 'saver name' }
+It 'scheme empty'      { Assert-Equal $null (ConvertFrom-ActiveScheme -Text '').Guid 'empty -> null' }
+
+Write-Host "`nNew-BatteryReport" -ForegroundColor Cyan
+$batDev = New-BatteryReport -ChargePercent 100 -IsOnAC $true -IsCharging $false `
+    -DesignCapacityMWh 95065 -FullChargeCapacityMWh 52166 -CycleCount 0 `
+    -Chemistry 'LiP' -Manufacturer 'SMP' -PowerPlan 'Balanced' -PowerPlanGuid '381b4222-f694-41f0-9685-ff5bb260df2e'
+It 'batt wear 45'      { Assert-Equal 45 $batDev.WearPercent 'wear (95065->52166)' }
+It 'batt health 55'    { Assert-Equal 55 $batDev.HealthPercent 'health = 100-wear' }
+It 'batt status full'  { Assert-Equal 'Fully charged (on AC)' $batDev.Status 'on AC, not charging, 100%' }
+It 'batt cycles null'  { Assert-Equal $null $batDev.CycleCount 'cycle 0 -> null (not reported)' }
+It 'batt chem friendly'{ Assert-Equal 'Lithium Polymer' $batDev.Chemistry 'LiP -> friendly' }
+It 'batt design kept'  { Assert-Equal 95065 $batDev.DesignCapacityMWh 'design mWh' }
+
+$batNoDes = New-BatteryReport -ChargePercent 80 -IsOnAC $true -IsCharging $true -DesignCapacityMWh $null `
+    -FullChargeCapacityMWh 52166 -CycleCount 120 -Chemistry 'Li-I' -PowerPlan 'Balanced' -PowerPlanGuid 'x'
+It 'batt wear null'    { Assert-Equal $null $batNoDes.WearPercent 'no design -> null wear' }
+It 'batt cycles kept'  { Assert-Equal 120 $batNoDes.CycleCount 'cycle 120 kept' }
+It 'batt status charge'{ Assert-Equal 'Charging' $batNoDes.Status 'on AC + charging' }
+It 'batt chem li-ion'  { Assert-Equal 'Lithium-ion' $batNoDes.Chemistry 'Li-I -> friendly' }
+
+$batDis = New-BatteryReport -ChargePercent 63 -IsOnAC $false -IsCharging $false -DesignCapacityMWh 95065 -FullChargeCapacityMWh 52166 -PowerPlan 'Balanced' -PowerPlanGuid 'x'
+It 'batt status disch' { Assert-Equal 'On battery (discharging)' $batDis.Status 'not on AC' }
+$batAc = New-BatteryReport -ChargePercent 70 -IsOnAC $true -IsCharging $false -DesignCapacityMWh 95065 -FullChargeCapacityMWh 90000 -PowerPlan 'Balanced' -PowerPlanGuid 'x'
+It 'batt status ac'    { Assert-Equal 'On AC (not charging)' $batAc.Status 'on AC, not charging, 70%' }
+
+Write-Host "`nGet-BatteryInsights" -ForegroundColor Cyan
+$niWear = Get-BatteryInsights -Battery $batDev    # wear 45, Balanced
+It 'batt wear warn text' { Assert-Equal $true (HasNote $niWear 'significantly worn') 'wear 45 -> warn' }
+It 'batt wear warn kind' { Assert-Equal 'warn' (@($niWear | Where-Object { $_.Text -match 'significantly worn' })[0].Kind) 'warn kind' }
+It 'batt wear one note'  { Assert-Equal 1 (@($niWear).Count) 'only wear note (Balanced -> no power note)' }
+
+$bat25 = New-BatteryReport -ChargePercent 100 -IsOnAC $true -IsCharging $false -DesignCapacityMWh 100000 -FullChargeCapacityMWh 75000 -PowerPlan 'Balanced' -PowerPlanGuid '381b4222-f694-41f0-9685-ff5bb260df2e'
+$ni25 = Get-BatteryInsights -Battery $bat25
+It 'batt wear info text' { Assert-Equal $true (HasNote $ni25 'noticeable wear') 'wear 25 -> info' }
+It 'batt wear info kind' { Assert-Equal 'info' (@($ni25 | Where-Object { $_.Text -match 'noticeable wear' })[0].Kind) 'info kind' }
+
+$bat10 = New-BatteryReport -ChargePercent 100 -IsOnAC $true -IsCharging $false -DesignCapacityMWh 100000 -FullChargeCapacityMWh 90000 -PowerPlan 'Balanced' -PowerPlanGuid '381b4222-f694-41f0-9685-ff5bb260df2e'
+$ni10 = Get-BatteryInsights -Battery $bat10
+It 'batt wear none'      { Assert-Equal 0 (@($ni10).Count) 'wear 10 + Balanced -> no notes' }
+
+$batSaverGuid = New-BatteryReport -ChargePercent 90 -IsOnAC $false -IsCharging $false -DesignCapacityMWh 100000 -FullChargeCapacityMWh 96000 -PowerPlan 'Energiesparmodus' -PowerPlanGuid 'a1841308-3541-4fab-bc81-f71556f20b4a'
+It 'batt saver by guid'  { Assert-Equal $true (HasNote (Get-BatteryInsights -Battery $batSaverGuid) 'Power saver') 'saver GUID (localized name)' }
+$batSaverName = New-BatteryReport -ChargePercent 90 -IsOnAC $false -IsCharging $false -DesignCapacityMWh 100000 -FullChargeCapacityMWh 96000 -PowerPlan 'Power saver' -PowerPlanGuid 'some-other-guid'
+It 'batt saver by name'  { Assert-Equal $true (HasNote (Get-BatteryInsights -Battery $batSaverName) 'Power saver') 'saver by name' }
+
+Write-Host "`nSystem report (Battery wiring)" -ForegroundColor Cyan
+$sysBat = Get-SystemInsights -Cpu $cpuDev -Memory $memDual -Gpu $gpu -Storage $st -Battery $batDev
+It 'sys has battery note' { Assert-Equal $true (HasNote $sysBat 'significantly worn') 'battery note in sys insights' }
+$sysNoBat = Get-SystemInsights -Cpu $cpuDev -Memory $memDual -Gpu $gpu -Storage $st -Battery $null
+It 'sys null battery ok'  { Assert-Equal $false (HasNote $sysNoBat 'worn') 'null battery -> no battery note, no error' }
+$repBat = New-SystemReport -Cpu $cpuDev -Memory $memDual -Gpu $gpu -Storage $st -Battery $batDev
+It 'report has battery'   { Assert-Equal 'Fully charged (on AC)' $repBat.Battery.Status 'battery section in report' }
+It 'report battery note'  { Assert-Equal $true (HasNote $repBat.Insights 'significantly worn') 'battery note flows to report' }
+$repNoBat = New-SystemReport -Cpu $cpuDev -Memory $memDual -Gpu $gpu -Storage $st
+It 'report null battery'  { Assert-Equal $null $repNoBat.Battery 'no battery -> null section' }
+
+Write-Host "`nWrite-SystemConsole (Battery)" -ForegroundColor Cyan
+$conBat = (Write-SystemConsole $repBat | Out-String)
+It 'console battery sect'  { Assert-Equal $true  ([bool]($conBat -match 'Cycle count')) 'battery section present (section-unique label)' }
+It 'console battery status'{ Assert-Equal $true  ([bool]($conBat -match 'Fully charged')) 'status shown' }
+It 'console battery wear'  { Assert-Equal $true  ([bool]($conBat -match '45% worn')) 'wear shown' }
+$conNoBat = (Write-SystemConsole $repNoBat | Out-String)
+It 'console no battery'    { Assert-Equal $false ([bool]($conNoBat -match 'Cycle count')) 'no battery -> no section' }
+
 Write-Host "`n$script:Pass passed, $script:Fail failed`n"
 if ($script:Fail) { exit 1 } else { exit 0 }

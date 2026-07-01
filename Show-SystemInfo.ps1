@@ -348,6 +348,125 @@ function New-StorageReport {
     [pscustomobject]@{ Disks = $diskList; Volumes = $volList }
 }
 
+function ConvertFrom-BatteryReportXml {
+    # Pure parse of `powercfg /batteryreport /xml` text. Reads the first
+    # Batteries/Battery node specifically: a bare //DesignCapacity also matches
+    # the RuntimeEstimates node, whose InnerText is '95065PT4H33M44S...'.
+    param([string] $Xml)
+    $out = [pscustomobject]@{
+        DesignCapacityMWh = $null; FullChargeCapacityMWh = $null; CycleCount = $null
+        Chemistry = $null; Manufacturer = $null; SerialNumber = $null
+    }
+    if ([string]::IsNullOrWhiteSpace($Xml)) { return $out }
+    try { $doc = [xml]$Xml } catch { return $out }
+    if ($null -eq $doc.DocumentElement) { return $out }
+    $ns = New-Object System.Xml.XmlNamespaceManager($doc.NameTable)
+    $ns.AddNamespace('b', $doc.DocumentElement.NamespaceURI)
+    $batt = $doc.SelectSingleNode('//b:Batteries/b:Battery', $ns)
+    if ($null -eq $batt) { return $out }
+
+    function _txt($node, $nsm, $name) {
+        $n = $node.SelectSingleNode("b:$name", $nsm)
+        if ($n -and -not [string]::IsNullOrWhiteSpace($n.InnerText)) { return $n.InnerText.Trim() }
+        return $null
+    }
+    function _int($node, $nsm, $name) {
+        $t = _txt $node $nsm $name
+        $v = 0
+        if ($null -ne $t -and [int]::TryParse($t, [ref]$v)) { return $v }
+        return $null
+    }
+    $out.DesignCapacityMWh     = _int $batt $ns 'DesignCapacity'
+    $out.FullChargeCapacityMWh = _int $batt $ns 'FullChargeCapacity'
+    $out.CycleCount            = _int $batt $ns 'CycleCount'
+    $out.Chemistry             = _txt $batt $ns 'Chemistry'
+    $out.Manufacturer          = _txt $batt $ns 'Manufacturer'
+    $out.SerialNumber          = _txt $batt $ns 'SerialNumber'
+    return $out
+}
+
+function ConvertFrom-ActiveScheme {
+    # Pure parse of `powercfg /getactivescheme` output, e.g.
+    #   'Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)'
+    param([string] $Text)
+    $out = [pscustomobject]@{ Guid = $null; Name = $null }
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $out }
+    $g = [regex]::Match($Text, '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}')
+    if ($g.Success) { $out.Guid = $g.Value }
+    $n = [regex]::Match($Text, '\(([^)]*)\)')
+    if ($n.Success) { $out.Name = $n.Groups[1].Value.Trim() }
+    return $out
+}
+
+function ConvertTo-BatteryChemistry {
+    # Friendly name for a battery-report chemistry code; unknown codes pass through.
+    param([string] $Code)
+    if ([string]::IsNullOrWhiteSpace($Code)) { return 'Unknown' }
+    switch ($Code.Trim().ToUpperInvariant()) {
+        'LIP'  { 'Lithium Polymer' }
+        'LI-P' { 'Lithium Polymer' }
+        'LION' { 'Lithium-ion' }
+        'LI-I' { 'Lithium-ion' }
+        'LI'   { 'Lithium-ion' }
+        'NIMH' { 'Nickel-Metal Hydride' }
+        'NICD' { 'Nickel-Cadmium' }
+        'PBAC' { 'Lead Acid' }
+        default { $Code.Trim() }
+    }
+}
+
+function New-BatteryReport {
+    # Build the Battery section (pure). Non-deterministic/live values are params.
+    param(
+        $ChargePercent = $null,
+        $IsOnAC = $null,
+        $IsCharging = $null,
+        $DesignCapacityMWh = $null,
+        $FullChargeCapacityMWh = $null,
+        $CycleCount = $null,
+        [string] $Chemistry = '',
+        [string] $Manufacturer = '',
+        [string] $PowerPlan = '',
+        [string] $PowerPlanGuid = ''
+    )
+    $design = if ($DesignCapacityMWh) { [double]$DesignCapacityMWh } else { $null }
+    $full   = if ($FullChargeCapacityMWh) { [double]$FullChargeCapacityMWh } else { $null }
+
+    $wear = $null; $health = $null
+    if ($null -ne $design -and $design -gt 0 -and $null -ne $full) {
+        $w = [int][math]::Round(($design - $full) / $design * 100, 0)
+        if ($w -lt 0) { $w = 0 } elseif ($w -gt 100) { $w = 100 }
+        $wear = $w
+        $health = 100 - $w
+    }
+
+    $charge = if ($null -ne $ChargePercent -and "$ChargePercent" -ne '') { [int]$ChargePercent } else { $null }
+    $status =
+        if ($IsOnAC -eq $false) { 'On battery (discharging)' }
+        elseif ($IsOnAC -eq $true) {
+            if ($IsCharging -eq $true) { 'Charging' }
+            elseif ($null -ne $charge -and $charge -ge 99) { 'Fully charged (on AC)' }
+            else { 'On AC (not charging)' }
+        } else { 'Unknown' }
+
+    $cycles = if ($CycleCount -and [int]$CycleCount -gt 0) { [int]$CycleCount } else { $null }
+
+    [pscustomobject]@{
+        ChargePercent         = $charge
+        IsOnAC                = $(if ($IsOnAC -eq $true) { $true } elseif ($IsOnAC -eq $false) { $false } else { $null })
+        Status                = $status
+        DesignCapacityMWh     = $(if ($null -ne $design) { [int]$design } else { $null })
+        FullChargeCapacityMWh = $(if ($null -ne $full) { [int]$full } else { $null })
+        WearPercent           = $wear
+        HealthPercent         = $health
+        CycleCount            = $cycles
+        Chemistry             = ConvertTo-BatteryChemistry $Chemistry
+        Manufacturer          = "$Manufacturer".Trim()
+        PowerPlan             = "$PowerPlan".Trim()
+        PowerPlanGuid         = "$PowerPlanGuid".Trim()
+    }
+}
+
 # =====================================================================
 # Insights / bottlenecks (pure)
 # =====================================================================
@@ -466,9 +585,33 @@ function Get-StorageInsights {
     return , @($notes)
 }
 
+function Get-BatteryInsights {
+    # Battery wear + power-plan notes from the Battery section.
+    param([object] $Battery)
+    $notes = @()
+    if ($null -eq $Battery) { return , @($notes) }
+
+    $wear = $Battery.WearPercent
+    if ($null -ne $wear) {
+        $health = $Battery.HealthPercent
+        if ([int]$wear -ge 35) {
+            $notes += [pscustomobject]@{ Kind = 'warn'; Text = "Battery is significantly worn - it holds about $health% of its original design capacity (about $wear% lost). Runtime is much shorter than when new; consider replacing it." }
+        } elseif ([int]$wear -ge 20) {
+            $notes += [pscustomobject]@{ Kind = 'info'; Text = "Battery shows noticeable wear - it holds about $health% of its design capacity (about $wear% lost)." }
+        }
+    }
+
+    $guid = "$($Battery.PowerPlanGuid)".Trim()
+    $plan = "$($Battery.PowerPlan)".Trim()
+    if ($guid -eq 'a1841308-3541-4fab-bc81-f71556f20b4a' -or $plan -match 'saver') {
+        $notes += [pscustomobject]@{ Kind = 'warn'; Text = "Active power plan is 'Power saver', which caps CPU speed to save energy. Switch to Balanced or High performance for full performance." }
+    }
+    return , @($notes)
+}
+
 function Get-SystemInsights {
     # Orchestrator: per-subsystem notes plus cross-subsystem bottleneck notes.
-    param([object] $Cpu, [object] $Memory, [object] $Gpu = $null, [object] $Storage = $null)
+    param([object] $Cpu, [object] $Memory, [object] $Gpu = $null, [object] $Storage = $null, [object] $Battery = $null)
     # Assign sub-results first (their ,@() returns unwrap to clean arrays), then
     # concatenate with +=. Wrapping the calls in @() here would nest each result
     # as a single sub-array element, merging multiple notes into one.
@@ -493,6 +636,10 @@ function Get-SystemInsights {
         $storageNotes = Get-StorageInsights -Storage $Storage
         $notes += $storageNotes
     }
+    if ($null -ne $Battery) {
+        $batteryNotes = Get-BatteryInsights -Battery $Battery
+        $notes += $batteryNotes
+    }
 
     # Cross note: many cores starved by single-channel memory bandwidth.
     if ($Memory.PopulatedSlots -eq 1 -and $Memory.TotalSlots -ge 2 -and $null -ne $Cpu.Cores -and [int]$Cpu.Cores -ge 6) {
@@ -514,13 +661,14 @@ function Get-SystemInsights {
 
 function New-SystemReport {
     # Compose the subsystem sections and run the insight engine.
-    param([object] $Cpu, [object] $Memory, [object] $Gpu = $null, [object] $Storage = $null)
-    $insights = Get-SystemInsights -Cpu $Cpu -Memory $Memory -Gpu $Gpu -Storage $Storage
+    param([object] $Cpu, [object] $Memory, [object] $Gpu = $null, [object] $Storage = $null, [object] $Battery = $null)
+    $insights = Get-SystemInsights -Cpu $Cpu -Memory $Memory -Gpu $Gpu -Storage $Storage -Battery $Battery
     [pscustomobject]@{
         Cpu      = $Cpu
         Memory   = $Memory
         Gpu      = $Gpu
         Storage  = $Storage
+        Battery  = $Battery
         Insights = $insights
     }
 }
@@ -635,6 +783,71 @@ function Get-StorageInfo {
     [pscustomobject]@{ Disks = $disks; Volumes = $vols }
 }
 
+function Get-BatteryInfo {
+    # Live battery + active-power-plan data, normalized for New-BatteryReport.
+    # Returns $null on a desktop (no battery). Self-guarding (never throws);
+    # verified via the -Console run rather than unit tests.
+    $w32 = $null
+    try { $w32 = Get-CimInstance Win32_Battery -ErrorAction Stop | Select-Object -First 1 } catch { }
+    if ($null -eq $w32) { return $null }   # no battery instance -> desktop / AC only
+
+    $charge = if ($null -ne $w32.EstimatedChargeRemaining) { [int]$w32.EstimatedChargeRemaining } else { $null }
+
+    # On-AC / charging from root\wmi BatteryStatus (reliable booleans); fall back
+    # to the Win32_Battery.BatteryStatus enum.
+    $isOnAC = $null; $isCharging = $null
+    try {
+        $bs = Get-CimInstance -Namespace root\wmi -ClassName BatteryStatus -ErrorAction Stop | Select-Object -First 1
+        if ($bs) {
+            $isOnAC = [bool]$bs.PowerOnline
+            $isCharging = [bool]$bs.Charging
+            if ($null -eq $charge -and $bs.RemainingCapacity) {
+                $fcc = Get-CimInstance -Namespace root\wmi -ClassName BatteryFullChargedCapacity -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($fcc.FullChargedCapacity -gt 0) { $charge = [int][math]::Round([double]$bs.RemainingCapacity / [double]$fcc.FullChargedCapacity * 100, 0) }
+            }
+        }
+    } catch { }
+    if ($null -eq $isOnAC) {
+        switch ([int]$w32.BatteryStatus) {
+            1 { $isOnAC = $false; $isCharging = $false }
+            { $_ -in 6, 7, 8, 9 } { $isOnAC = $true; $isCharging = $true }
+            default { $isOnAC = $true; $isCharging = $false }
+        }
+    }
+
+    # Design/full capacity, cycles, chemistry, maker via the powercfg report.
+    $design = $null; $full = $null; $cycles = $null; $chem = $null; $maker = $null
+    try {
+        $tmp = Join-Path $env:TEMP ("battrep_{0}.xml" -f [guid]::NewGuid().ToString('N'))
+        $null = powercfg /batteryreport /output $tmp /xml 2>$null
+        if (Test-Path $tmp) {
+            $rep = ConvertFrom-BatteryReportXml -Xml (Get-Content $tmp -Raw -ErrorAction SilentlyContinue)
+            $design = $rep.DesignCapacityMWh; $full = $rep.FullChargeCapacityMWh
+            $cycles = $rep.CycleCount; $chem = $rep.Chemistry; $maker = $rep.Manufacturer
+            Remove-Item $tmp -ErrorAction SilentlyContinue
+        }
+    } catch { }
+    if ($null -eq $full) {
+        try {
+            $fcc = Get-CimInstance -Namespace root\wmi -ClassName BatteryFullChargedCapacity -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($fcc.FullChargedCapacity -gt 0) { $full = [int]$fcc.FullChargedCapacity }
+        } catch { }
+    }
+    if ([string]::IsNullOrWhiteSpace($maker)) { $maker = "$($w32.Name)".Trim() }
+
+    $planName = $null; $planGuid = $null
+    try {
+        $s = ConvertFrom-ActiveScheme -Text (powercfg /getactivescheme 2>$null | Out-String)
+        $planName = $s.Name; $planGuid = $s.Guid
+    } catch { }
+
+    [pscustomobject]@{
+        ChargePercent = $charge; IsOnAC = $isOnAC; IsCharging = $isCharging
+        DesignCapacityMWh = $design; FullChargeCapacityMWh = $full; CycleCount = $cycles
+        Chemistry = $chem; Manufacturer = $maker; PowerPlan = $planName; PowerPlanGuid = $planGuid
+    }
+}
+
 # =====================================================================
 # Renderers
 # =====================================================================
@@ -722,6 +935,24 @@ function Write-SystemConsole {
         }
         ''
     }
+    if ($Report.Battery) {
+        $bat = $Report.Battery
+        $chgStr  = if ($null -ne $bat.ChargePercent) { "$($bat.ChargePercent)%" } else { 'Unknown' }
+        $wearStr = if ($null -ne $bat.WearPercent) { "$($bat.HealthPercent)% of design ($($bat.WearPercent)% worn)" } else { 'Unknown' }
+        $desStr  = if ($null -ne $bat.DesignCapacityMWh) { '{0:N0} mWh' -f $bat.DesignCapacityMWh } else { 'Unknown' }
+        $fulStr  = if ($null -ne $bat.FullChargeCapacityMWh) { '{0:N0} mWh' -f $bat.FullChargeCapacityMWh } else { 'Unknown' }
+        $cycStr  = if ($null -ne $bat.CycleCount) { "$($bat.CycleCount)" } else { 'Not reported' }
+        '  Battery'
+        '  -------'
+        '  Charge           : {0}  ({1})' -f $chgStr, $bat.Status
+        '  Health           : {0}' -f $wearStr
+        '  Design capacity  : {0}' -f $desStr
+        '  Full charge      : {0}' -f $fulStr
+        '  Cycle count      : {0}' -f $cycStr
+        '  Chemistry        : {0}' -f $bat.Chemistry
+        '  Power plan       : {0}' -f $bat.PowerPlan
+        ''
+    }
     if (@($Report.Insights).Count -gt 0) {
         '  Notes'
         '  -----'
@@ -786,7 +1017,7 @@ function New-SystemForm {
 
     $ovTop = New-Object System.Windows.Forms.Panel
     $ovTop.Dock = 'Top'
-    $ovTop.Height = 134
+    $ovTop.Height = 154
     $cpuLine = "$($cpu.Name)  -  $($cpu.Cores)C / $($cpu.Threads)T" + $(if ($cpu.Codename) { ", $($cpu.Codename)" } else { '' })
     $memLine = "$($mem.TotalInstalledGB) GB $($mem.TypeName)  -  $($mem.PopulatedSlots)/$($mem.TotalSlots) slots, max $maxCap"
     $gpuParts = @()
@@ -797,7 +1028,14 @@ function New-SystemForm {
     $storageLine = if ($bootDisk) {
         "$($bootDisk.SizeGB) GB $($bootDisk.Kind)" + $(if ($sysVol) { "  -  $($sysVol.FreeGB) GB free on $($sysVol.DriveLetter):" } else { '' })
     } elseif ($null -ne $st -and @($st.Disks).Count) { "$(@($st.Disks).Count) disk(s)" } else { 'Unknown' }
-    $oy = Add-KvBlock -Parent $ovTop -Keys @('Processor:', 'Graphics:', 'Memory:', 'Storage:') -Values @($cpuLine, $gpuLine, $memLine, $storageLine) -X 4 -Y 6 -KeyW 90 -ValW 460
+    $batteryLine = if ($null -ne $Report.Battery) {
+        $b = $Report.Battery
+        $segs = @("$($b.ChargePercent)%", $b.Status)
+        if ($null -ne $b.WearPercent) { $segs += "$($b.WearPercent)% worn" }
+        if ($b.PowerPlan) { $segs += $b.PowerPlan }
+        ($segs -join '  -  ')
+    } else { 'none (AC only)' }
+    $oy = Add-KvBlock -Parent $ovTop -Keys @('Processor:', 'Graphics:', 'Memory:', 'Storage:', 'Battery:') -Values @($cpuLine, $gpuLine, $memLine, $storageLine, $batteryLine) -X 4 -Y 6 -KeyW 90 -ValW 460
     $notesHeader = New-Object System.Windows.Forms.Label
     $notesHeader.Text = 'Notes / Bottlenecks:'
     $notesHeader.Location = New-Object System.Drawing.Point(4, ($oy + 2))
@@ -975,6 +1213,28 @@ function New-SystemForm {
     $tabStorage.Controls.Add($diskPanel)  # Top (outermost = very top)
     [void]$tabs.TabPages.Add($tabStorage)
 
+    # --- Battery tab (only when a battery exists) ---
+    if ($null -ne $Report.Battery) {
+        $bat = $Report.Battery
+        $tabBattery = New-Object System.Windows.Forms.TabPage
+        $tabBattery.Text = 'Battery'
+        $batKeys = @('Charge:', 'Status:', 'Power source:', 'Health:', 'Design capacity:', 'Full-charge capacity:', 'Cycle count:', 'Chemistry:', 'Manufacturer:', 'Power plan:')
+        $batVals = @(
+            $(if ($null -ne $bat.ChargePercent) { "$($bat.ChargePercent)%" } else { 'Unknown' })
+            $bat.Status
+            $(if ($bat.IsOnAC -eq $true) { 'AC (plugged in)' } elseif ($bat.IsOnAC -eq $false) { 'Battery' } else { 'Unknown' })
+            $(if ($null -ne $bat.WearPercent) { "$($bat.HealthPercent)% of design ($($bat.WearPercent)% worn)" } else { 'Unknown' })
+            $(if ($null -ne $bat.DesignCapacityMWh) { '{0:N0} mWh' -f $bat.DesignCapacityMWh } else { 'Unknown' })
+            $(if ($null -ne $bat.FullChargeCapacityMWh) { '{0:N0} mWh' -f $bat.FullChargeCapacityMWh } else { 'Unknown' })
+            $(if ($null -ne $bat.CycleCount) { "$($bat.CycleCount)" } else { 'Not reported' })
+            $(if ($bat.Chemistry) { $bat.Chemistry } else { 'Unknown' })
+            $(if ($bat.Manufacturer) { $bat.Manufacturer } else { 'Unknown' })
+            $(if ($bat.PowerPlan) { $bat.PowerPlan } else { 'Unknown' })
+        )
+        [void](Add-KvBlock -Parent $tabBattery -Keys $batKeys -Values $batVals -KeyW 150 -ValW 420)
+        [void]$tabs.TabPages.Add($tabBattery)
+    }
+
     $form.Controls.Add($tabs)
 
     # --- Buttons (below tabs, always visible) ---
@@ -1023,6 +1283,7 @@ function Invoke-SystemInfo {
         $cpuRaw  = Get-CpuInfo
         $gpuRaw  = @(Get-GpuInfo)
         $stRaw   = Get-StorageInfo
+        $batRaw  = Get-BatteryInfo
     } catch {
         $err = "Couldn't read system info from Windows (CIM/WMI): $($_.Exception.Message)"
         if ($Console) { Write-Output $err; return }
@@ -1053,8 +1314,14 @@ function Invoke-SystemInfo {
 
     $gpu = New-GpuReport -Gpus $gpuRaw -Now (Get-Date)
     $storage = New-StorageReport -Disks $stRaw.Disks -Volumes $stRaw.Volumes
+    $battery = if ($null -ne $batRaw) {
+        New-BatteryReport -ChargePercent $batRaw.ChargePercent -IsOnAC $batRaw.IsOnAC -IsCharging $batRaw.IsCharging `
+                          -DesignCapacityMWh $batRaw.DesignCapacityMWh -FullChargeCapacityMWh $batRaw.FullChargeCapacityMWh `
+                          -CycleCount $batRaw.CycleCount -Chemistry $batRaw.Chemistry -Manufacturer $batRaw.Manufacturer `
+                          -PowerPlan $batRaw.PowerPlan -PowerPlanGuid $batRaw.PowerPlanGuid
+    } else { $null }
 
-    $report = New-SystemReport -Cpu $cpu -Memory $memory -Gpu $gpu -Storage $storage
+    $report = New-SystemReport -Cpu $cpu -Memory $memory -Gpu $gpu -Storage $storage -Battery $battery
 
     if ($Console) { Write-SystemConsole $report; return }
 

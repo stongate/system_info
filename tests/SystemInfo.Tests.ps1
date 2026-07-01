@@ -388,5 +388,65 @@ It 'console battery wear'  { Assert-Equal $true  ([bool]($conBat -match '45% wor
 $conNoBat = (Write-SystemConsole $repNoBat | Out-String)
 It 'console no battery'    { Assert-Equal $false ([bool]($conNoBat -match 'Cycle count')) 'no battery -> no section' }
 
+# =====================================================================
+# Live / Load — memory pressure (slice E)
+# =====================================================================
+
+Write-Host "`nNew-LoadReport" -ForegroundColor Cyan
+$ld = New-LoadReport -TotalPhysicalBytes 17179869184 -AvailableBytes 2367782912 -CommittedBytes (46379*1MB) -CommitLimitBytes (54512*1MB) -PercentCommitted 85 -PageReadsPerSec 2016
+It 'load avail pct'       { Assert-Equal 14   $ld.AvailablePercent 'available % (2.2/16 GB)' }
+It 'load avail gb'        { Assert-Equal 2.2  $ld.AvailableGB 'available GB' }
+It 'load total gb'        { Assert-Equal 16   $ld.TotalPhysicalGB 'total GB' }
+It 'load commit pct raw'  { Assert-Equal 85   $ld.CommitPercent 'commit % (uses raw)' }
+It 'load reads'           { Assert-Equal 2016 $ld.PageReadsPerSec 'page reads/sec' }
+$ld2 = New-LoadReport -TotalPhysicalBytes 17179869184 -AvailableBytes 2367782912 -CommittedBytes (46379*1MB) -CommitLimitBytes (54512*1MB) -PercentCommitted $null -PageReadsPerSec 0
+It 'load commit computed' { Assert-Equal 85 $ld2.CommitPercent 'commit % computed when raw absent' }
+$ld3 = New-LoadReport -TotalPhysicalBytes $null -AvailableBytes $null -CommittedBytes $null -CommitLimitBytes $null -PercentCommitted $null -PageReadsPerSec $null
+It 'load null avail pct'  { Assert-Equal $null $ld3.AvailablePercent 'null inputs -> null pct' }
+It 'load null commit'     { Assert-Equal $null $ld3.CommitPercent 'null inputs -> null commit' }
+
+Write-Host "`nGet-LoadInsights" -ForegroundColor Cyan
+function LoadObj($ap, $ag, $cp, $rd) { [pscustomobject]@{ AvailablePercent=$ap; AvailableGB=$ag; CommitPercent=$cp; PageReadsPerSec=$rd } }
+$loLowAvail = Get-LoadInsights -Load (LoadObj 6 1.0 70 50)
+It 'load warn low avail'  { Assert-Equal 'warn' (@($loLowAvail)[0].Kind) 'avail 6% -> warn' }
+It 'load warn text'       { Assert-Equal $true (HasNote $loLowAvail 'Low on memory') 'warn text' }
+$loCommit = Get-LoadInsights -Load (LoadObj 30 5.0 92 10)
+It 'load warn commit'     { Assert-Equal $true (HasNote $loCommit 'Low on memory') 'commit 92% -> warn' }
+It 'load commit no clause'{ Assert-Equal $false (HasNote $loCommit 'paging to disk') 'commit warn, low paging -> no paging clause' }
+$loPaging = Get-LoadInsights -Load (LoadObj 14 2.2 85 2000)
+It 'load warn paging'     { Assert-Equal $true (HasNote $loPaging 'paging to disk') 'tight + paging -> warn w/ paging clause' }
+$loInfo = Get-LoadInsights -Load (LoadObj 18 3.0 60 20)
+It 'load info kind'       { Assert-Equal 'info' (@($loInfo)[0].Kind) 'avail 18% -> info' }
+It 'load info no clause'  { Assert-Equal $false (HasNote $loInfo 'paging to disk') 'info -> no paging clause' }
+$loOk = Get-LoadInsights -Load (LoadObj 60 9.5 40 0)
+It 'load healthy none'    { Assert-Equal 0 (@($loOk).Count) 'healthy -> no note' }
+
+Write-Host "`nSystem report (Load wiring)" -ForegroundColor Cyan
+$loadWarn = New-LoadReport -TotalPhysicalBytes 17179869184 -AvailableBytes 1000000000 -CommittedBytes (52000*1MB) -CommitLimitBytes (54512*1MB) -PercentCommitted 95 -PageReadsPerSec 3000
+$sysLoad = Get-SystemInsights -Cpu $cpuDev -Memory $memDual -Gpu $gpu -Storage $st -Load $loadWarn
+It 'sys has load note'  { Assert-Equal $true (HasNote $sysLoad 'Low on memory') 'load note in sys insights' }
+$sysNoLoad = Get-SystemInsights -Cpu $cpuDev -Memory $memDual -Gpu $gpu -Storage $st -Load $null
+It 'sys null load ok'    { Assert-Equal $false (HasNote $sysNoLoad 'Low on memory') 'null load -> no note, no error' }
+$repLoad = New-SystemReport -Cpu $cpuDev -Memory $memDual -Gpu $gpu -Storage $st -Load $loadWarn
+It 'report has load'     { Assert-Equal 95 $repLoad.Load.CommitPercent 'load section in report' }
+It 'report load note'    { Assert-Equal $true (HasNote $repLoad.Insights 'Low on memory') 'load note flows to report' }
+$repNoLoad = New-SystemReport -Cpu $cpuDev -Memory $memDual -Gpu $gpu -Storage $st
+It 'report null load'    { Assert-Equal $null $repNoLoad.Load 'no load -> null section' }
+
+Write-Host "`nGet-LoadStatus" -ForegroundColor Cyan
+It 'status pressure avail'  { Assert-Equal 'pressure' (Get-LoadStatus -Load (LoadObj 6 1.0 70 0))    'avail 6%' }
+It 'status pressure commit' { Assert-Equal 'pressure' (Get-LoadStatus -Load (LoadObj 30 5 92 0))     'commit 92%' }
+It 'status pressure paging' { Assert-Equal 'pressure' (Get-LoadStatus -Load (LoadObj 14 2.2 85 2000)) 'tight + paging' }
+It 'status tight'           { Assert-Equal 'tight'    (Get-LoadStatus -Load (LoadObj 18 3 60 20))    'avail 18%' }
+It 'status ok'              { Assert-Equal 'ok'       (Get-LoadStatus -Load (LoadObj 60 9 40 0))     'healthy' }
+
+Write-Host "`nWrite-SystemConsole (Live/Load)" -ForegroundColor Cyan
+$repLoadFull = New-SystemReport -Cpu $cpuDev -Memory $memDual -Gpu $gpu -Storage $st -Load $loadWarn
+$conLoad = (Write-SystemConsole $repLoadFull | Out-String)
+It 'console load sect'   { Assert-Equal $true  ([bool]($conLoad -match 'Commit charge')) 'load section present' }
+It 'console load status' { Assert-Equal $true  ([bool]($conLoad -match 'Under pressure')) 'status line shown' }
+$conNoLoad2 = (Write-SystemConsole $repNoLoad | Out-String)
+It 'console no load'     { Assert-Equal $false ([bool]($conNoLoad2 -match 'Commit charge')) 'no load -> no section' }
+
 Write-Host "`n$script:Pass passed, $script:Fail failed`n"
 if ($script:Fail) { exit 1 } else { exit 0 }

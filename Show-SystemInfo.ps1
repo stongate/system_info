@@ -467,6 +467,39 @@ function New-BatteryReport {
     }
 }
 
+function New-LoadReport {
+    # Build the Live/Load section (pure) from raw live memory counters.
+    param(
+        $TotalPhysicalBytes = $null,
+        $AvailableBytes = $null,
+        $CommittedBytes = $null,
+        $CommitLimitBytes = $null,
+        $PercentCommitted = $null,
+        $PageReadsPerSec = $null
+    )
+    $toGB = { param($b) if ($b) { [math]::Round([double]$b / 1GB, 1) } else { $null } }
+
+    $availPct = if ($TotalPhysicalBytes -and [double]$TotalPhysicalBytes -gt 0 -and $null -ne $AvailableBytes) {
+        [int][math]::Round([double]$AvailableBytes / [double]$TotalPhysicalBytes * 100, 0)
+    } else { $null }
+
+    $commitPct =
+        if ($null -ne $PercentCommitted -and "$PercentCommitted" -ne '') { [int]$PercentCommitted }
+        elseif ($CommitLimitBytes -and [double]$CommitLimitBytes -gt 0 -and $null -ne $CommittedBytes) {
+            [int][math]::Round([double]$CommittedBytes / [double]$CommitLimitBytes * 100, 0)
+        } else { $null }
+
+    [pscustomobject]@{
+        TotalPhysicalGB  = & $toGB $TotalPhysicalBytes
+        AvailableGB      = & $toGB $AvailableBytes
+        AvailablePercent = $availPct
+        CommitUsedGB     = & $toGB $CommittedBytes
+        CommitLimitGB    = & $toGB $CommitLimitBytes
+        CommitPercent    = $commitPct
+        PageReadsPerSec  = if ($null -ne $PageReadsPerSec -and "$PageReadsPerSec" -ne '') { [int]$PageReadsPerSec } else { $null }
+    }
+}
+
 # =====================================================================
 # Insights / bottlenecks (pure)
 # =====================================================================
@@ -609,9 +642,52 @@ function Get-BatteryInsights {
     return , @($notes)
 }
 
+function Get-LoadStatus {
+    # Pure memory-pressure tier from the Load section: 'ok' | 'tight' | 'pressure'.
+    # Single source of truth for the thresholds (used by insights + renderers).
+    # Levels drive the tier; paging only escalates a already-tight state.
+    param([object] $Load)
+    if ($null -eq $Load) { return 'ok' }
+    $avail = $Load.AvailablePercent
+    $commit = $Load.CommitPercent
+    $reads = if ($null -ne $Load.PageReadsPerSec) { [int]$Load.PageReadsPerSec } else { 0 }
+
+    $availLow       = ($null -ne $avail -and [int]$avail -lt 10)
+    $availTight     = ($null -ne $avail -and [int]$avail -lt 20)
+    $commitHigh     = ($null -ne $commit -and [int]$commit -ge 90)
+    $commitElevated = ($null -ne $commit -and [int]$commit -ge 80)
+    $paging         = ($reads -gt 100)
+
+    if ($availLow -or $commitHigh -or ($availTight -and $paging)) { 'pressure' }
+    elseif ($availTight -or $commitElevated) { 'tight' }
+    else { 'ok' }
+}
+
+function Get-LoadInsights {
+    # Live memory-pressure notes from the Load section, keyed off Get-LoadStatus.
+    param([object] $Load)
+    $notes = @()
+    if ($null -eq $Load) { return , @($notes) }
+    $avail = $Load.AvailablePercent
+    $commit = $Load.CommitPercent
+    if ($null -eq $avail -and $null -eq $commit) { return , @($notes) }
+    $reads = if ($null -ne $Load.PageReadsPerSec) { [int]$Load.PageReadsPerSec } else { 0 }
+
+    $status = Get-LoadStatus -Load $Load
+    $detail = "$($Load.AvailableGB) GB available ($avail%), commit at $commit%"
+
+    if ($status -eq 'pressure') {
+        $pageClause = if ($reads -gt 100) { ", paging to disk (~{0:N0}/sec)" -f $reads } else { '' }
+        $notes += [pscustomobject]@{ Kind = 'warn'; Text = "Low on memory right now: $detail$pageClause. Close apps or add RAM - the system is slowing from memory pressure." }
+    } elseif ($status -eq 'tight') {
+        $notes += [pscustomobject]@{ Kind = 'info'; Text = "Memory is getting tight right now: $detail. Heavy multitasking may start to slow down." }
+    }
+    return , @($notes)
+}
+
 function Get-SystemInsights {
     # Orchestrator: per-subsystem notes plus cross-subsystem bottleneck notes.
-    param([object] $Cpu, [object] $Memory, [object] $Gpu = $null, [object] $Storage = $null, [object] $Battery = $null)
+    param([object] $Cpu, [object] $Memory, [object] $Gpu = $null, [object] $Storage = $null, [object] $Battery = $null, [object] $Load = $null)
     # Assign sub-results first (their ,@() returns unwrap to clean arrays), then
     # concatenate with +=. Wrapping the calls in @() here would nest each result
     # as a single sub-array element, merging multiple notes into one.
@@ -640,6 +716,10 @@ function Get-SystemInsights {
         $batteryNotes = Get-BatteryInsights -Battery $Battery
         $notes += $batteryNotes
     }
+    if ($null -ne $Load) {
+        $loadNotes = Get-LoadInsights -Load $Load
+        $notes += $loadNotes
+    }
 
     # Cross note: many cores starved by single-channel memory bandwidth.
     if ($Memory.PopulatedSlots -eq 1 -and $Memory.TotalSlots -ge 2 -and $null -ne $Cpu.Cores -and [int]$Cpu.Cores -ge 6) {
@@ -661,14 +741,15 @@ function Get-SystemInsights {
 
 function New-SystemReport {
     # Compose the subsystem sections and run the insight engine.
-    param([object] $Cpu, [object] $Memory, [object] $Gpu = $null, [object] $Storage = $null, [object] $Battery = $null)
-    $insights = Get-SystemInsights -Cpu $Cpu -Memory $Memory -Gpu $Gpu -Storage $Storage -Battery $Battery
+    param([object] $Cpu, [object] $Memory, [object] $Gpu = $null, [object] $Storage = $null, [object] $Battery = $null, [object] $Load = $null)
+    $insights = Get-SystemInsights -Cpu $Cpu -Memory $Memory -Gpu $Gpu -Storage $Storage -Battery $Battery -Load $Load
     [pscustomobject]@{
         Cpu      = $Cpu
         Memory   = $Memory
         Gpu      = $Gpu
         Storage  = $Storage
         Battery  = $Battery
+        Load     = $Load
         Insights = $insights
     }
 }
@@ -848,6 +929,27 @@ function Get-BatteryInfo {
     }
 }
 
+function Get-LoadInfo {
+    # Live memory-pressure snapshot, normalized for New-LoadReport. Self-guarding;
+    # returns $null only if the memory counter is entirely unavailable. Verified
+    # via the -Console run rather than unit tests.
+    try {
+        $m = Get-CimInstance Win32_PerfFormattedData_PerfOS_Memory -ErrorAction Stop | Select-Object -First 1
+    } catch { return $null }
+    if ($null -eq $m) { return $null }
+    $total = $null
+    try { $total = (Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).TotalPhysicalMemory } catch { }
+
+    [pscustomobject]@{
+        TotalPhysicalBytes = $total
+        AvailableBytes     = $m.AvailableBytes
+        CommittedBytes     = $m.CommittedBytes
+        CommitLimitBytes   = $m.CommitLimit
+        PercentCommitted   = $m.PercentCommittedBytesInUse
+        PageReadsPerSec    = $m.PageReadsPerSec
+    }
+}
+
 # =====================================================================
 # Renderers
 # =====================================================================
@@ -951,6 +1053,22 @@ function Write-SystemConsole {
         '  Cycle count      : {0}' -f $cycStr
         '  Chemistry        : {0}' -f $bat.Chemistry
         '  Power plan       : {0}' -f $bat.PowerPlan
+        ''
+    }
+    if ($Report.Load) {
+        $ld = $Report.Load
+        $status = switch (Get-LoadStatus -Load $ld) { 'pressure' { 'Under pressure' } 'tight' { 'Getting tight' } default { 'OK' } }
+        $avail = if ($null -ne $ld.AvailableGB) { "$($ld.AvailableGB) GB" + $(if ($null -ne $ld.AvailablePercent) { " ($($ld.AvailablePercent)%)" } else { '' }) } else { 'Unknown' }
+        $commit = if ($null -ne $ld.CommitPercent) { "{0} GB of {1} GB  ({2}%)" -f $ld.CommitUsedGB, $ld.CommitLimitGB, $ld.CommitPercent } else { 'Unknown' }
+        $paging = if ($null -ne $ld.PageReadsPerSec) { "~{0:N0} hard reads/sec" -f $ld.PageReadsPerSec } else { 'Unknown' }
+        '  Live / Load'
+        '  -----------'
+        '  Total RAM        : {0}' -f $(if ($null -ne $ld.TotalPhysicalGB) { "$($ld.TotalPhysicalGB) GB" } else { 'Unknown' })
+        '  Available        : {0}' -f $avail
+        '  Commit charge    : {0}' -f $commit
+        '  Paging (to disk) : {0}' -f $paging
+        '  Status           : {0}' -f $status
+        '  (live values, as of when this ran)'
         ''
     }
     if (@($Report.Insights).Count -gt 0) {
@@ -1235,6 +1353,30 @@ function New-SystemForm {
         [void]$tabs.TabPages.Add($tabBattery)
     }
 
+    # --- Live tab (only when live load data exists) ---
+    if ($null -ne $Report.Load) {
+        $ld = $Report.Load
+        $status = switch (Get-LoadStatus -Load $ld) { 'pressure' { 'Under pressure' } 'tight' { 'Getting tight' } default { 'OK' } }
+        $tabLive = New-Object System.Windows.Forms.TabPage
+        $tabLive.Text = 'Live'
+        $liveKeys = @('Total RAM:', 'Available:', 'Commit charge:', 'Paging (to disk):', 'Status:')
+        $liveVals = @(
+            $(if ($null -ne $ld.TotalPhysicalGB) { "$($ld.TotalPhysicalGB) GB" } else { 'Unknown' })
+            $(if ($null -ne $ld.AvailableGB) { "$($ld.AvailableGB) GB" + $(if ($null -ne $ld.AvailablePercent) { " ($($ld.AvailablePercent)%)" } else { '' }) } else { 'Unknown' })
+            $(if ($null -ne $ld.CommitPercent) { "{0} GB of {1} GB  ({2}%)" -f $ld.CommitUsedGB, $ld.CommitLimitGB, $ld.CommitPercent } else { 'Unknown' })
+            $(if ($null -ne $ld.PageReadsPerSec) { "~{0:N0} hard reads/sec" -f $ld.PageReadsPerSec } else { 'Unknown' })
+            $status
+        )
+        $ly = Add-KvBlock -Parent $tabLive -Keys $liveKeys -Values $liveVals -KeyW 150 -ValW 420
+        $liveCaption = New-Object System.Windows.Forms.Label
+        $liveCaption.Text = '(live values, as of when this window opened)'
+        $liveCaption.Location = New-Object System.Drawing.Point(14, ($ly + 6))
+        $liveCaption.AutoSize = $true
+        $liveCaption.ForeColor = [System.Drawing.Color]::Gray
+        $tabLive.Controls.Add($liveCaption)
+        [void]$tabs.TabPages.Add($tabLive)
+    }
+
     $form.Controls.Add($tabs)
 
     # --- Buttons (below tabs, always visible) ---
@@ -1284,6 +1426,7 @@ function Invoke-SystemInfo {
         $gpuRaw  = @(Get-GpuInfo)
         $stRaw   = Get-StorageInfo
         $batRaw  = Get-BatteryInfo
+        $loadRaw = Get-LoadInfo
     } catch {
         $err = "Couldn't read system info from Windows (CIM/WMI): $($_.Exception.Message)"
         if ($Console) { Write-Output $err; return }
@@ -1320,8 +1463,13 @@ function Invoke-SystemInfo {
                           -CycleCount $batRaw.CycleCount -Chemistry $batRaw.Chemistry -Manufacturer $batRaw.Manufacturer `
                           -PowerPlan $batRaw.PowerPlan -PowerPlanGuid $batRaw.PowerPlanGuid
     } else { $null }
+    $load = if ($null -ne $loadRaw) {
+        New-LoadReport -TotalPhysicalBytes $loadRaw.TotalPhysicalBytes -AvailableBytes $loadRaw.AvailableBytes `
+                       -CommittedBytes $loadRaw.CommittedBytes -CommitLimitBytes $loadRaw.CommitLimitBytes `
+                       -PercentCommitted $loadRaw.PercentCommitted -PageReadsPerSec $loadRaw.PageReadsPerSec
+    } else { $null }
 
-    $report = New-SystemReport -Cpu $cpu -Memory $memory -Gpu $gpu -Storage $storage -Battery $battery
+    $report = New-SystemReport -Cpu $cpu -Memory $memory -Gpu $gpu -Storage $storage -Battery $battery -Load $load
 
     if ($Console) { Write-SystemConsole $report; return }
 

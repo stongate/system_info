@@ -591,5 +591,79 @@ It 'console gs temp' { Assert-Equal $true  ([bool]($conGs -match 'Temperature'))
 $conNoGs = (Write-SystemConsole $repNoGs | Out-String)
 It 'console no gs'   { Assert-Equal $false ([bool]($conNoGs -match 'GPU sensors')) 'no gs -> no section' }
 
+# =====================================================================
+# Gaming capability (slice H)
+# =====================================================================
+
+Write-Host "`nGet-GpuGamingTier" -ForegroundColor Cyan
+function Tier($n) { (Get-GpuGamingTier -Name $n).Rank }
+It 'tier 5090'    { Assert-Equal 5 (Tier 'NVIDIA GeForce RTX 5090') 'rtx 5090' }
+It 'tier 5070ti'  { Assert-Equal 4 (Tier 'NVIDIA GeForce RTX 5070 Ti') 'rtx 5070 ti' }
+It 'tier 2060'    { Assert-Equal 3 (Tier 'NVIDIA GeForce RTX 2060 with Max-Q Design') 'rtx 2060' }
+It 'tier 5060'    { Assert-Equal 3 (Tier 'NVIDIA GeForce RTX 5060') 'rtx 5060 (not the 5090 rank)' }
+It 'tier 1650'    { Assert-Equal 2 (Tier 'NVIDIA GeForce GTX 1650') 'gtx 1650' }
+It 'tier 9070xt'  { Assert-Equal 5 (Tier 'AMD Radeon RX 9070 XT') 'rx 9070 xt' }
+It 'tier 9070'    { Assert-Equal 4 (Tier 'AMD Radeon RX 9070') 'rx 9070 (no XT -> lower)' }
+It 'tier 9060xt'  { Assert-Equal 3 (Tier 'AMD Radeon RX 9060 XT') 'rx 9060 xt' }
+It 'tier b580'    { Assert-Equal 3 (Tier 'Intel Arc B580 Graphics') 'arc b580' }
+It 'tier irisxe'  { Assert-Equal 1 (Tier 'Intel(R) Iris(R) Xe Graphics') 'iris xe' }
+It 'tier uhd'     { Assert-Equal 1 (Tier 'Intel(R) UHD Graphics') 'intel uhd' }
+It 'tier unknown' { Assert-Equal $null (Tier 'Frobozz 9000') 'unknown -> null' }
+It 'tier label'   { Assert-Equal $true ([bool]((Get-GpuGamingTier -Name 'NVIDIA GeForce RTX 2060').Label -match '1080p')) 'label present' }
+
+Write-Host "`nNew-GpuReport (display fields)" -ForegroundColor Cyan
+$gpuDisp = New-GpuReport -Gpus @([pscustomobject]@{ Name='Intel UHD'; Vendor='Intel'; AdapterRamBytes=1073741824; RegistryVramBytes=$null; DriverVersion='x'; DriverDate=$null; Availability=3; ResH=1920; ResV=1200; ResRefresh=60 }) -Now ([datetime]'2026-07-01')
+It 'gpu refresh'   { Assert-Equal 60   $gpuDisp.Gpus[0].RefreshHz 'refresh hz' }
+It 'gpu reswidth'  { Assert-Equal 1920 $gpuDisp.Gpus[0].ResWidth 'res width' }
+It 'gpu resheight' { Assert-Equal 1200 $gpuDisp.Gpus[0].ResHeight 'res height' }
+$gpuNoDisp = New-GpuReport -Gpus @([pscustomobject]@{ Name='RTX 2060'; Vendor='NVIDIA'; AdapterRamBytes=6442450944; RegistryVramBytes=$null; DriverVersion='x'; DriverDate=$null; Availability=8; ResH=0; ResV=0; ResRefresh=0 }) -Now ([datetime]'2026-07-01')
+It 'gpu no refresh' { Assert-Equal $null $gpuNoDisp.Gpus[0].RefreshHz 'no display -> null refresh' }
+
+Write-Host "`nNew-GamingReport" -ForegroundColor Cyan
+$gGpu = New-GpuReport -Gpus @(
+    [pscustomobject]@{ Name='NVIDIA GeForce RTX 2060 with Max-Q Design'; Vendor='NVIDIA'; AdapterRamBytes=6442450944; RegistryVramBytes=$null; DriverVersion='x'; DriverDate=$null; Availability=8; ResH=0; ResV=0; ResRefresh=0 }
+    [pscustomobject]@{ Name='Intel(R) UHD Graphics'; Vendor='Intel'; AdapterRamBytes=1073741824; RegistryVramBytes=$null; DriverVersion='x'; DriverDate=$null; Availability=3; ResH=1920; ResV=1200; ResRefresh=60 }
+) -Now ([datetime]'2026-07-01')
+$gStorage = New-StorageReport -Disks @([pscustomobject]@{ Name='NVMe X'; MediaType='SSD'; BusType='NVMe'; SizeBytes=512000000000; Health='Healthy'; IsBoot=$true }) -Volumes @()
+$gm = New-GamingReport -Gpu $gGpu -Cpu $cpuDev -Memory $memDual -Storage $gStorage
+It 'gaming gpu'      { Assert-Equal 'NVIDIA GeForce RTX 2060 with Max-Q Design' $gm.GpuName 'picks the discrete GPU' }
+It 'gaming rank'     { Assert-Equal 3 $gm.Rank 'rank 3' }
+It 'gaming verdict'  { Assert-Equal $true ([bool]($gm.Verdict -match '1080p high')) 'verdict label' }
+It 'gaming refresh'  { Assert-Equal 60 $gm.RefreshHz 'display refresh from the UHD adapter' }
+It 'gaming vram lim' { Assert-Equal $true ([bool](($gm.Limiters -join ',') -match 'VRAM')) '6 GB VRAM limiter' }
+It 'gaming hz lim'   { Assert-Equal $true ([bool](($gm.Limiters -join ',') -match 'Hz')) '60 Hz limiter' }
+
+$hiGpu = New-GpuReport -Gpus @([pscustomobject]@{ Name='NVIDIA GeForce RTX 5080'; Vendor='NVIDIA'; AdapterRamBytes=17179869184; RegistryVramBytes=$null; DriverVersion='x'; DriverDate=$null; Availability=3; ResH=3840; ResV=2160; ResRefresh=144 }) -Now ([datetime]'2026-07-01')
+$hiMem = New-MemoryReport -Modules @([pscustomobject]@{ Slot='A'; CapacityBytes=17179869184; RatedSpeed=6000; CurrentSpeed=6000; VendorRaw='x'; PartNumber='y'; TypeCode=34 }, [pscustomobject]@{ Slot='B'; CapacityBytes=17179869184; RatedSpeed=6000; CurrentSpeed=6000; VendorRaw='x'; PartNumber='y'; TypeCode=34 }) -MaxCapacityBytes 137438953472 -TotalSlots 2 -BoardMaker x -BoardModel y -BoardVersion z
+$hiGm = New-GamingReport -Gpu $hiGpu -Cpu $cpuDev -Memory $hiMem -Storage $gStorage
+It 'gaming hi rank'  { Assert-Equal 5 $hiGm.Rank 'rtx 5080 -> 5' }
+It 'gaming hi none'  { Assert-Equal 0 (@($hiGm.Limiters).Count) 'high-end -> no limiters' }
+
+$igGpu = New-GpuReport -Gpus @([pscustomobject]@{ Name='Intel(R) UHD Graphics'; Vendor='Intel'; AdapterRamBytes=1073741824; RegistryVramBytes=$null; DriverVersion='x'; DriverDate=$null; Availability=3; ResH=1920; ResV=1080; ResRefresh=60 }) -Now ([datetime]'2026-07-01')
+$igGm = New-GamingReport -Gpu $igGpu -Cpu $cpuDev -Memory $memDual -Storage $gStorage
+It 'gaming ig disc'  { Assert-Equal $false $igGm.IsDiscrete 'integrated only' }
+It 'gaming ig lim'   { Assert-Equal $true ([bool](($igGm.Limiters -join ',') -match 'no discrete')) 'no-discrete limiter' }
+
+Write-Host "`nGet-GamingInsights" -ForegroundColor Cyan
+$giVram = Get-GamingInsights -Gaming $gm
+It 'game vram info'  { Assert-Equal $true (HasNote $giVram 'VRAM') 'low VRAM note' }
+It 'game vram kind'  { Assert-Equal 'info' (@($giVram | Where-Object { $_.Text -match 'VRAM' })[0].Kind) 'vram info kind' }
+It 'game 60hz info'  { Assert-Equal $true (HasNote $giVram 'caps what you see') '60 Hz note' }
+$giHi = Get-GamingInsights -Gaming $hiGm
+It 'game hi none'    { Assert-Equal 0 (@($giHi).Count) 'high-end -> no notes' }
+$giIg = Get-GamingInsights -Gaming $igGm
+It 'game ig warn'    { Assert-Equal 'warn' (@($giIg | Where-Object { $_.Text -match 'No discrete' })[0].Kind) 'no-discrete warn' }
+
+Write-Host "`nSystem report (Gaming wiring)" -ForegroundColor Cyan
+$repGame = New-SystemReport -Cpu $cpuDev -Memory $memDual -Gpu $gGpu -Storage $gStorage
+It 'report has gaming'  { Assert-Equal 3 $repGame.Gaming.Rank 'gaming section computed into report' }
+It 'report gaming note' { Assert-Equal $true (HasNote $repGame.Insights 'VRAM') 'gaming note flows to report' }
+
+Write-Host "`nWrite-SystemConsole (Gaming + memory footnote)" -ForegroundColor Cyan
+$conGame = (Write-SystemConsole $repGame | Out-String)
+It 'console gaming sect'    { Assert-Equal $true ([bool]($conGame -match 'Overall')) 'gaming section present (Overall label)' }
+It 'console gaming verdict' { Assert-Equal $true ([bool]($conGame -match '1080p high')) 'verdict shown' }
+It 'console mem footnote'   { Assert-Equal $true ([bool]($conGame -match 'CPU-Z')) 'memory MT/s footnote' }
+
 Write-Host "`n$script:Pass passed, $script:Fail failed`n"
 if ($script:Fail) { exit 1 } else { exit 0 }

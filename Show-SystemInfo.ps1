@@ -299,9 +299,103 @@ function New-GpuReport {
             IsActive        = ([int]$g.Availability -eq 3)
             IsDiscrete      = ($type -eq 'Discrete')
             Resolution      = $res
+            ResWidth        = if ($g.ResH -and [int]$g.ResH -gt 0) { [int]$g.ResH } else { $null }
+            ResHeight       = if ($g.ResV -and [int]$g.ResV -gt 0) { [int]$g.ResV } else { $null }
+            RefreshHz       = if ($g.ResRefresh -and [int]$g.ResRefresh -gt 0) { [int]$g.ResRefresh } else { $null }
         }
     })
     [pscustomobject]@{ Gpus = $list }
+}
+
+function Get-GpuGamingTier {
+    # Coarse, best-effort gaming tier for a GPU name (generation-level; refreshed
+    # from 2026 GPU hierarchies). Ordered highest-rank-first; first match wins.
+    # Returns { Rank (5..1 or $null); Label }. The precise value is the limiters,
+    # not this bucket.
+    param([string] $Name)
+    $out = [pscustomobject]@{ Rank = $null; Label = 'Unrecognized' }
+    if ([string]::IsNullOrWhiteSpace($Name)) { return $out }
+    $rules = @(
+        @{ r = 'RTX\s*(5090|5080|4090|4080)\b'; k = 5 }
+        @{ r = 'RX\s*(9070\s*XT|7900\s*XTX)'; k = 5 }
+        @{ r = 'RTX\s*(5070|4070|3090|3080)\b'; k = 4 }
+        @{ r = 'RX\s*(9070|7900|7800|6900|6800)\b'; k = 4 }
+        @{ r = 'RTX\s*(5060|4060|3070|3060|2080|2070|2060)\b'; k = 3 }
+        @{ r = 'RX\s*(9060|7700|7600|6750|6700|6650|6600)\b'; k = 3 }
+        @{ r = 'Arc\s*(B580|A770|A750)\b'; k = 3 }
+        @{ r = 'RTX\s*(5050|3050)\b'; k = 2 }
+        @{ r = 'GTX\s*(1660|1650|1080|1070|1060)\b'; k = 2 }
+        @{ r = 'RX\s*(5700|5600|590|580)\b'; k = 2 }
+        @{ r = 'Arc\s*(B570|A580|A380)\b'; k = 2 }
+        @{ r = 'GTX\s*(1050|1030)\b|\bMX\d'; k = 1 }
+        @{ r = 'RX\s*(570|560|550)\b|Vega'; k = 1 }
+        @{ r = 'Iris|UHD|HD\s*Graphics|Radeon.*Graphics'; k = 1 }
+    )
+    $labels = @{
+        5 = '4K ultra / max settings'
+        4 = '1440p ultra / entry 4K'
+        3 = '1080p high / 1440p mainstream'
+        2 = '1080p mainstream / esports'
+        1 = 'esports / light 1080p (integrated-class)'
+    }
+    foreach ($rule in $rules) {
+        if ($Name -match $rule.r) {
+            $out.Rank = $rule.k
+            $out.Label = $labels[$rule.k]
+            return $out
+        }
+    }
+    return $out
+}
+
+function New-GamingReport {
+    # Synthesize a gaming-capability verdict + named limiters from the already-
+    # built subsystem sections (pure; no I/O). Picks the gaming GPU (first
+    # discrete, else first) and the display (first GPU reporting a refresh).
+    param([object] $Gpu, [object] $Cpu, [object] $Memory, [object] $Storage)
+    $gpus = @($Gpu.Gpus)
+    $gamingGpu = @($gpus | Where-Object { $_.IsDiscrete }) | Select-Object -First 1
+    if (-not $gamingGpu) { $gamingGpu = $gpus | Select-Object -First 1 }
+    $display = @($gpus | Where-Object { $null -ne $_.RefreshHz }) | Select-Object -First 1
+
+    $tier       = if ($gamingGpu) { Get-GpuGamingTier -Name $gamingGpu.Name } else { [pscustomobject]@{ Rank = $null; Label = 'Unrecognized' } }
+    $vram       = if ($gamingGpu) { $gamingGpu.VramGB } else { $null }
+    $isDiscrete = if ($gamingGpu) { [bool]$gamingGpu.IsDiscrete } else { $false }
+    $cores      = if ($Cpu) { $Cpu.Cores } else { $null }
+    $ramGB      = if ($Memory) { $Memory.TotalInstalledGB } else { $null }
+    $dual       = if ($Memory) { [int]$Memory.PopulatedSlots -ge 2 } else { $false }
+    $refresh    = if ($display) { $display.RefreshHz } else { $null }
+    $dispW      = if ($display) { $display.ResWidth } else { $null }
+    $dispH      = if ($display) { $display.ResHeight } else { $null }
+    $bootKind   = $null
+    if ($Storage) { $bd = @($Storage.Disks | Where-Object { $_.IsBoot }) | Select-Object -First 1; if ($bd) { $bootKind = $bd.Kind } }
+
+    $verdict = if ($null -ne $tier.Rank) { $tier.Label } else { 'Unrecognized GPU (not in our tier list)' }
+
+    $limiters = @()
+    if (-not $isDiscrete) { $limiters += 'no discrete GPU' }
+    elseif ($null -ne $vram -and [double]$vram -lt 8) { $limiters += "$vram GB VRAM" }
+    if ($null -ne $ramGB -and [double]$ramGB -lt 16) { $limiters += "$ramGB GB RAM" }
+    if (-not $dual) { $limiters += 'single-channel RAM' }
+    if ($null -ne $refresh -and [int]$refresh -le 60) { $limiters += "$refresh Hz display" }
+    if ($bootKind -eq 'HDD') { $limiters += 'HDD boot drive' }
+
+    [pscustomobject]@{
+        GpuName     = if ($gamingGpu) { $gamingGpu.Name } else { $null }
+        Rank        = $tier.Rank
+        TierLabel   = $tier.Label
+        Verdict     = $verdict
+        VramGB      = $vram
+        IsDiscrete  = $isDiscrete
+        Cores       = $cores
+        RamGB       = $ramGB
+        DualChannel = $dual
+        DisplayW    = $dispW
+        DisplayH    = $dispH
+        RefreshHz   = $refresh
+        BootKind    = $bootKind
+        Limiters    = $limiters
+    }
 }
 
 function Get-DiskKind {
@@ -845,9 +939,26 @@ function Get-GpuSensorInsights {
     return , @($notes)
 }
 
+function Get-GamingInsights {
+    # Gaming-specific notes from the Gaming section. Single-channel/HDD-boot/XMP
+    # already have notes elsewhere, so they are not duplicated here.
+    param([object] $Gaming)
+    $notes = @()
+    if ($null -eq $Gaming) { return , @($notes) }
+    if ($Gaming.IsDiscrete -eq $false) {
+        $notes += [pscustomobject]@{ Kind = 'warn'; Text = 'No discrete GPU - gaming is limited to esports and older titles at low settings.' }
+    } elseif ($null -ne $Gaming.VramGB -and [double]$Gaming.VramGB -lt 8) {
+        $notes += [pscustomobject]@{ Kind = 'info'; Text = "$($Gaming.VramGB) GB of VRAM limits texture quality in modern AAA games at high settings (8 GB+ is the comfortable minimum today)." }
+    }
+    if ($null -ne $Gaming.RefreshHz -and [int]$Gaming.RefreshHz -le 60 -and $null -ne $Gaming.Rank -and [int]$Gaming.Rank -ge 3) {
+        $notes += [pscustomobject]@{ Kind = 'info'; Text = "Your GPU can likely push past 60 fps, but the $($Gaming.RefreshHz) Hz display caps what you see - a high-refresh panel would show more." }
+    }
+    return , @($notes)
+}
+
 function Get-SystemInsights {
     # Orchestrator: per-subsystem notes plus cross-subsystem bottleneck notes.
-    param([object] $Cpu, [object] $Memory, [object] $Gpu = $null, [object] $Storage = $null, [object] $Battery = $null, [object] $Load = $null, [object] $Network = $null, [object] $GpuSensor = $null)
+    param([object] $Cpu, [object] $Memory, [object] $Gpu = $null, [object] $Storage = $null, [object] $Battery = $null, [object] $Load = $null, [object] $Network = $null, [object] $GpuSensor = $null, [object] $Gaming = $null)
     # Assign sub-results first (their ,@() returns unwrap to clean arrays), then
     # concatenate with +=. Wrapping the calls in @() here would nest each result
     # as a single sub-array element, merging multiple notes into one.
@@ -888,6 +999,10 @@ function Get-SystemInsights {
         $gpuSensorNotes = Get-GpuSensorInsights -GpuSensor $GpuSensor
         $notes += $gpuSensorNotes
     }
+    if ($null -ne $Gaming) {
+        $gamingNotes = Get-GamingInsights -Gaming $Gaming
+        $notes += $gamingNotes
+    }
 
     # Cross note: many cores starved by single-channel memory bandwidth.
     if ($Memory.PopulatedSlots -eq 1 -and $Memory.TotalSlots -ge 2 -and $null -ne $Cpu.Cores -and [int]$Cpu.Cores -ge 6) {
@@ -910,7 +1025,9 @@ function Get-SystemInsights {
 function New-SystemReport {
     # Compose the subsystem sections and run the insight engine.
     param([object] $Cpu, [object] $Memory, [object] $Gpu = $null, [object] $Storage = $null, [object] $Battery = $null, [object] $Load = $null, [object] $Network = $null, [object] $GpuSensor = $null)
-    $insights = Get-SystemInsights -Cpu $Cpu -Memory $Memory -Gpu $Gpu -Storage $Storage -Battery $Battery -Load $Load -Network $Network -GpuSensor $GpuSensor
+    # Gaming is a synthesis of the sections above (computed here, not passed in).
+    $gaming = if ($null -ne $Gpu) { New-GamingReport -Gpu $Gpu -Cpu $Cpu -Memory $Memory -Storage $Storage } else { $null }
+    $insights = Get-SystemInsights -Cpu $Cpu -Memory $Memory -Gpu $Gpu -Storage $Storage -Battery $Battery -Load $Load -Network $Network -GpuSensor $GpuSensor -Gaming $gaming
     [pscustomobject]@{
         Cpu       = $Cpu
         Memory    = $Memory
@@ -920,6 +1037,7 @@ function New-SystemReport {
         Load      = $Load
         Network   = $Network
         GpuSensor = $GpuSensor
+        Gaming    = $gaming
         Insights  = $insights
     }
 }
@@ -1213,6 +1331,8 @@ function Write-SystemConsole {
                                 @{n='Maker';e={$_.Vendor}},
                                 @{n='Part #';e={$_.Part}} |
         Out-String).TrimEnd()
+    '  Note: speeds are MT/s (data rate); the DRAM bus clock is half - e.g. 3200 MT/s = 1600 MHz'
+    "        (that's CPU-Z's 'DRAM Frequency'; Task Manager labels MT/s as 'MHz')."
     ''
     if ($Report.Gpu -and @($Report.Gpu.Gpus).Count -gt 0) {
         '  Graphics'
@@ -1316,6 +1436,22 @@ function Write-SystemConsole {
         '  (live, via nvidia-smi)'
         ''
     }
+    if ($Report.Gaming) {
+        $gm = $Report.Gaming
+        $lim = if (@($gm.Limiters).Count -gt 0) { ($gm.Limiters -join ', ') } else { 'none - well balanced' }
+        $dispStr = if ($null -ne $gm.RefreshHz) { "$($gm.DisplayW)x$($gm.DisplayH) @ $($gm.RefreshHz) Hz" } else { 'Unknown' }
+        '  Gaming'
+        '  ------'
+        '  Overall          : {0}' -f $gm.Verdict
+        '  Limited by       : {0}' -f $lim
+        '  GPU              : {0}' -f $(if ($gm.GpuName) { $gm.GpuName } else { 'Unknown' })
+        '  VRAM             : {0}' -f $(if ($null -ne $gm.VramGB) { "$($gm.VramGB) GB" } else { 'Unknown' })
+        '  CPU              : {0}' -f $(if ($null -ne $gm.Cores) { "$($gm.Cores) cores" } else { 'Unknown' })
+        '  Memory           : {0}' -f $(if ($null -ne $gm.RamGB) { "$($gm.RamGB) GB $(if ($gm.DualChannel) { 'dual-channel' } else { 'single-channel' })" } else { 'Unknown' })
+        '  Display          : {0}' -f $dispStr
+        '  (tiering is approximate / generation-level)'
+        ''
+    }
     if (@($Report.Insights).Count -gt 0) {
         '  Notes'
         '  -----'
@@ -1380,7 +1516,7 @@ function New-SystemForm {
 
     $ovTop = New-Object System.Windows.Forms.Panel
     $ovTop.Dock = 'Top'
-    $ovTop.Height = 174
+    $ovTop.Height = 194
     $cpuLine = "$($cpu.Name)  -  $($cpu.Cores)C / $($cpu.Threads)T" + $(if ($cpu.Codename) { ", $($cpu.Codename)" } else { '' })
     $memLine = "$($mem.TotalInstalledGB) GB $($mem.TypeName)  -  $($mem.PopulatedSlots)/$($mem.TotalSlots) slots, max $maxCap"
     $gpuParts = @()
@@ -1407,7 +1543,11 @@ function New-SystemForm {
         if ($null -ne $primary.SignalPercent) { $det += "$($primary.SignalPercent)%" }
         "$($primary.Type)  -  $($primary.LinkMbps) Mbps" + $(if ($det.Count) { " ($($det -join ', '))" } else { '' })
     } else { 'No active connection' }
-    $oy = Add-KvBlock -Parent $ovTop -Keys @('Processor:', 'Graphics:', 'Memory:', 'Storage:', 'Battery:', 'Network:') -Values @($cpuLine, $gpuLine, $memLine, $storageLine, $batteryLine, $networkLine) -X 4 -Y 6 -KeyW 90 -ValW 460
+    $gamingLine = if ($null -ne $Report.Gaming) {
+        $g = $Report.Gaming
+        "$($g.Verdict)" + $(if (@($g.Limiters).Count -gt 0) { " (limited by $($g.Limiters -join ', '))" } else { '' })
+    } else { 'Unknown' }
+    $oy = Add-KvBlock -Parent $ovTop -Keys @('Processor:', 'Graphics:', 'Memory:', 'Storage:', 'Battery:', 'Network:', 'Gaming:') -Values @($cpuLine, $gpuLine, $memLine, $storageLine, $batteryLine, $networkLine, $gamingLine) -X 4 -Y 6 -KeyW 90 -ValW 460
     $notesHeader = New-Object System.Windows.Forms.Label
     $notesHeader.Text = 'Notes / Bottlenecks:'
     $notesHeader.Location = New-Object System.Drawing.Point(4, ($oy + 2))
@@ -1516,10 +1656,17 @@ function New-SystemForm {
         $mem.Board
     )
     $my = Add-KvBlock -Parent $tabMem -Keys $memKeys -Values $memVals -KeyW 130 -ValW 440
+    $memFoot = New-Object System.Windows.Forms.Label
+    $memFoot.Text = "MT/s = data rate; the DRAM clock is half (3200 MT/s = 1600 MHz, i.e. CPU-Z's 'DRAM Frequency')."
+    $memFoot.Location = New-Object System.Drawing.Point(14, ($my + 2))
+    $memFoot.AutoSize = $true
+    $memFoot.ForeColor = [System.Drawing.Color]::Gray
+    $memFoot.Anchor = 'Top,Left'
+    $tabMem.Controls.Add($memFoot)
     $list = New-Object System.Windows.Forms.ListView
     $list.View = 'Details'; $list.FullRowSelect = $true; $list.GridLines = $true
-    $list.Location = New-Object System.Drawing.Point(14, ($my + 4))
-    $list.Size = New-Object System.Drawing.Size(572, (430 - $my))
+    $list.Location = New-Object System.Drawing.Point(14, ($my + 44))
+    $list.Size = New-Object System.Drawing.Size(572, (430 - $my - 40))
     $list.Anchor = 'Top,Bottom,Left,Right'
     [void]$list.Columns.Add('Slot', 70)
     [void]$list.Columns.Add('Size (GB)', 70)
@@ -1606,6 +1753,33 @@ function New-SystemForm {
     $tabStorage.Controls.Add($volLbl)     # Top
     $tabStorage.Controls.Add($diskPanel)  # Top (outermost = very top)
     [void]$tabs.TabPages.Add($tabStorage)
+
+    # --- Gaming tab (synthesis; present whenever a GPU was assessed) ---
+    if ($null -ne $Report.Gaming) {
+        $gm = $Report.Gaming
+        $tabGame = New-Object System.Windows.Forms.TabPage
+        $tabGame.Text = 'Gaming'
+        $lim = if (@($gm.Limiters).Count -gt 0) { ($gm.Limiters -join ', ') } else { 'none - well balanced' }
+        $disp = if ($null -ne $gm.RefreshHz) { "$($gm.DisplayW)x$($gm.DisplayH) @ $($gm.RefreshHz) Hz" } else { 'Unknown' }
+        $gKeys = @('Overall:', 'Limited by:', 'GPU:', 'VRAM:', 'CPU:', 'Memory:', 'Display:')
+        $gVals = @(
+            $gm.Verdict
+            $lim
+            $(if ($gm.GpuName) { $gm.GpuName } else { 'Unknown' })
+            $(if ($null -ne $gm.VramGB) { "$($gm.VramGB) GB" } else { 'Unknown' })
+            $(if ($null -ne $gm.Cores) { "$($gm.Cores) cores" } else { 'Unknown' })
+            $(if ($null -ne $gm.RamGB) { "$($gm.RamGB) GB $(if ($gm.DualChannel) { 'dual-channel' } else { 'single-channel' })" } else { 'Unknown' })
+            $disp
+        )
+        $gy = Add-KvBlock -Parent $tabGame -Keys $gKeys -Values $gVals -KeyW 110 -ValW 440
+        $gCap = New-Object System.Windows.Forms.Label
+        $gCap.Text = 'Gaming tiering is approximate / generation-level, not a benchmark.'
+        $gCap.Location = New-Object System.Drawing.Point(14, ($gy + 6))
+        $gCap.AutoSize = $true
+        $gCap.ForeColor = [System.Drawing.Color]::Gray
+        $tabGame.Controls.Add($gCap)
+        [void]$tabs.TabPages.Add($tabGame)
+    }
 
     # --- Battery tab (only when a battery exists) ---
     if ($null -ne $Report.Battery) {

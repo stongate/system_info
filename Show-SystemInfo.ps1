@@ -804,6 +804,85 @@ function New-GpuSensorReport {
     }
 }
 
+function New-FirmwareReport {
+    # Build the Firmware & Security section (pure) from the raw firmware bundle
+    # (no cmdlets here). Computes a Windows 11 readiness checklist; the CPU-model
+    # requirement has no honest source and is always 'unknown' (never judged).
+    param([object] $Raw)
+    if ($null -eq $Raw) { $Raw = [pscustomobject]@{} }
+
+    $firmwareType = if ($Raw.IsUefi) { 'UEFI' } elseif ($null -ne $Raw.IsUefi) { 'Legacy' } else { $null }
+    $secureBoot = if ($Raw.SecureBootRaw -eq 1) { 'On' }
+                  elseif ($Raw.SecureBootRaw -eq 0) { 'Off' }
+                  elseif ($firmwareType -eq 'Legacy') { 'Unavailable' }
+                  else { $null }
+
+    $tpmPresent = -not [string]::IsNullOrWhiteSpace($Raw.TpmName)
+    $tpmVersion = $null
+    if ($tpmPresent -and "$($Raw.TpmName)" -match '(\d+\.\d+)') { $tpmVersion = $Matches[1] }
+
+    $bios = [pscustomobject]@{
+        Vendor      = if ([string]::IsNullOrWhiteSpace($Raw.BiosVendor)) { $null } else { "$($Raw.BiosVendor)".Trim() }
+        Version     = if ([string]::IsNullOrWhiteSpace($Raw.BiosVersion)) { $null } else { "$($Raw.BiosVersion)".Trim() }
+        ReleaseDate = $Raw.BiosDate
+    }
+
+    # ---- Windows 11 readiness ----
+    $alreadyWin11 = ($null -ne $Raw.OsBuild -and [int]$Raw.OsBuild -ge 22000)
+    $ramGB  = if ($null -ne $Raw.RamBytes) { [math]::Round([double]$Raw.RamBytes / 1GB, 1) } else { $null }
+    $diskGB = if ($null -ne $Raw.SysDriveBytes) { [math]::Round([double]$Raw.SysDriveBytes / 1GB, 0) } else { $null }
+
+    if ($tpmPresent -and "$tpmVersion" -like '2*') { $tpmMet = $true }
+    elseif (-not $tpmPresent) { $tpmMet = $false }
+    elseif ($tpmVersion) { $tpmMet = $false }
+    else { $tpmMet = 'unknown' }
+    $tpmDetail = if ($tpmPresent) { if ($tpmVersion) { "TPM $tpmVersion detected" } else { 'TPM present (version unknown)' } } else { 'No TPM detected' }
+
+    if ($secureBoot -eq 'On') { $sbMet = $true } elseif ($null -eq $secureBoot) { $sbMet = 'unknown' } else { $sbMet = $false }
+    if ($firmwareType -eq 'UEFI') { $uefiMet = $true } elseif ($null -eq $firmwareType) { $uefiMet = 'unknown' } else { $uefiMet = $false }
+    if ($null -eq $ramGB) { $ramMet = 'unknown' } elseif ($ramGB -ge 4) { $ramMet = $true } else { $ramMet = $false }
+    if ($null -eq $diskGB) { $diskMet = 'unknown' } elseif ($diskGB -ge 64) { $diskMet = $true } else { $diskMet = $false }
+    if ($null -eq $Raw.AddressWidth) { $cpuBitMet = 'unknown' } elseif ([int]$Raw.AddressWidth -eq 64) { $cpuBitMet = $true } else { $cpuBitMet = $false }
+
+    $reqs = @(
+        [pscustomobject]@{ Name = 'TPM 2.0';          Met = $tpmMet;    Detail = $tpmDetail }
+        [pscustomobject]@{ Name = 'Secure Boot';      Met = $sbMet;     Detail = $(if ($secureBoot) { $secureBoot } else { 'Unknown' }) }
+        [pscustomobject]@{ Name = 'UEFI firmware';    Met = $uefiMet;   Detail = $(if ($firmwareType) { $firmwareType } else { 'Unknown' }) }
+        [pscustomobject]@{ Name = 'RAM >= 4 GB';      Met = $ramMet;    Detail = $(if ($null -ne $ramGB) { "$ramGB GB" } else { 'Unknown' }) }
+        [pscustomobject]@{ Name = 'Storage >= 64 GB'; Met = $diskMet;   Detail = $(if ($null -ne $diskGB) { "$diskGB GB" } else { 'Unknown' }) }
+        [pscustomobject]@{ Name = '64-bit CPU';       Met = $cpuBitMet; Detail = $(if ($null -ne $Raw.AddressWidth) { "$($Raw.AddressWidth)-bit" } else { 'Unknown' }) }
+        [pscustomobject]@{ Name = 'CPU model';        Met = 'unknown';  Detail = "Verify against Microsoft's supported-CPU list" }
+    )
+
+    $unmet = @($reqs | Where-Object { ($_.Met -is [bool]) -and (-not $_.Met) })
+    if ($alreadyWin11) {
+        $summary = 'This PC is running Windows 11.'
+    } elseif ($unmet.Count -eq 0) {
+        $summary = "Meets Windows 11's checkable requirements - verify the CPU model against Microsoft's supported-CPU list."
+    } else {
+        $reasons = @($unmet | ForEach-Object {
+            switch ($_.Name) {
+                'TPM 2.0'          { 'no TPM 2.0' }
+                'Secure Boot'      { 'Secure Boot off' }
+                'UEFI firmware'    { 'Legacy firmware' }
+                'RAM >= 4 GB'      { 'insufficient RAM' }
+                'Storage >= 64 GB' { 'insufficient storage' }
+                '64-bit CPU'       { '32-bit CPU' }
+                default            { $_.Name }
+            }
+        }) -join ', '
+        $summary = "Not ready for Windows 11: $reasons."
+    }
+
+    [pscustomobject]@{
+        Bios         = $bios
+        FirmwareType = $firmwareType
+        SecureBoot   = $secureBoot
+        Tpm          = [pscustomobject]@{ Present = $tpmPresent; Version = $tpmVersion }
+        Win11        = [pscustomobject]@{ AlreadyWin11 = $alreadyWin11; Requirements = $reqs; Summary = $summary }
+    }
+}
+
 # =====================================================================
 # Insights / bottlenecks (pure)
 # =====================================================================

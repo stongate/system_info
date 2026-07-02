@@ -756,5 +756,39 @@ $repUpGood = New-SystemReport -Cpu $cpuVirtOn -Memory $memDual -Gpu $gpuFresh -S
 $conUpGood = (Write-SystemConsole $repUpGood | Out-String)
 It 'console upgrade empty' { Assert-Equal $true ([bool]($conUpGood -match 'No upgrades suggested')) 'empty-state line' }
 
+Write-Host "`nNew-FirmwareReport" -ForegroundColor Cyan
+$fwWin11 = New-FirmwareReport -Raw ([pscustomobject]@{ BiosVendor='Dell Inc.'; BiosVersion='1.33.1'; BiosDate=[datetime]'2024-11-17'; IsUefi=$true; SecureBootRaw=1; TpmName='Trusted Platform Module 2.0'; OsBuild=26200; RamBytes=17179869184; SysDriveBytes=1024209543168; AddressWidth=64 })
+It 'fw type uefi'         { Assert-Equal 'UEFI'   $fwWin11.FirmwareType 'uefi' }
+It 'fw secure boot on'    { Assert-Equal 'On'     $fwWin11.SecureBoot 'sb on' }
+It 'fw tpm present'       { Assert-Equal $true    $fwWin11.Tpm.Present 'tpm present' }
+It 'fw tpm version'       { Assert-Equal '2.0'    $fwWin11.Tpm.Version 'tpm ver' }
+It 'fw bios version'      { Assert-Equal '1.33.1' $fwWin11.Bios.Version 'bios ver' }
+It 'fw already win11'     { Assert-Equal $true    $fwWin11.Win11.AlreadyWin11 'already' }
+It 'fw summary running'   { Assert-Equal $true ([bool]($fwWin11.Win11.Summary -match 'running Windows 11')) 'summary' }
+It 'fw cpu model unknown' { Assert-Equal 'unknown' (@($fwWin11.Win11.Requirements | Where-Object { $_.Name -eq 'CPU model' })[0].Met) 'cpu unknown' }
+It 'fw tpm req met'       { Assert-Equal $true (@($fwWin11.Win11.Requirements | Where-Object { $_.Name -eq 'TPM 2.0' })[0].Met) 'tpm met' }
+
+$fwLegacy = New-FirmwareReport -Raw ([pscustomobject]@{ BiosVendor='X'; BiosVersion='A1'; BiosDate=$null; IsUefi=$false; SecureBootRaw=$null; TpmName=$null; OsBuild=19045; RamBytes=8589934592; SysDriveBytes=256060514304; AddressWidth=64 })
+It 'fw legacy type'       { Assert-Equal 'Legacy'      $fwLegacy.FirmwareType 'legacy' }
+It 'fw legacy sb unavail' { Assert-Equal 'Unavailable' $fwLegacy.SecureBoot 'sb unavail' }
+It 'fw legacy tpm absent' { Assert-Equal $false        $fwLegacy.Tpm.Present 'no tpm' }
+It 'fw legacy not win11'  { Assert-Equal $false        $fwLegacy.Win11.AlreadyWin11 'not win11' }
+It 'fw legacy not ready'  { Assert-Equal $true ([bool]($fwLegacy.Win11.Summary -match 'Not ready')) 'not ready' }
+
+$fwSbOff = New-FirmwareReport -Raw ([pscustomobject]@{ BiosVendor='X'; BiosVersion='A1'; BiosDate=$null; IsUefi=$true; SecureBootRaw=0; TpmName='Trusted Platform Module 2.0'; OsBuild=19045; RamBytes=17179869184; SysDriveBytes=512110190592; AddressWidth=64 })
+It 'fw sb off'            { Assert-Equal 'Off' $fwSbOff.SecureBoot 'sb off' }
+It 'fw sb off reason'     { Assert-Equal $true ([bool]($fwSbOff.Win11.Summary -match 'Secure Boot off')) 'sb off reason' }
+
+$fwTpmNoVer = New-FirmwareReport -Raw ([pscustomobject]@{ IsUefi=$true; SecureBootRaw=1; TpmName='Trusted Platform Module'; OsBuild=19045; RamBytes=17179869184; SysDriveBytes=512110190592; AddressWidth=64 })
+It 'fw tpm no version'    { Assert-Equal '' "$($fwTpmNoVer.Tpm.Version)" 'no ver' }
+It 'fw tpm unknown met'   { Assert-Equal 'unknown' (@($fwTpmNoVer.Win11.Requirements | Where-Object { $_.Name -eq 'TPM 2.0' })[0].Met) 'tpm unknown' }
+
+$fwReady = New-FirmwareReport -Raw ([pscustomobject]@{ IsUefi=$true; SecureBootRaw=1; TpmName='Trusted Platform Module 2.0'; OsBuild=19045; RamBytes=17179869184; SysDriveBytes=512110190592; AddressWidth=64 })
+It 'fw win10 meets'       { Assert-Equal $true ([bool]($fwReady.Win11.Summary -match 'Meets Windows 11')) 'meets' }
+
+$fwNull = New-FirmwareReport -Raw $null
+It 'fw null type'         { Assert-Equal '' "$($fwNull.FirmwareType)" 'null type' }
+It 'fw null tpm absent'   { Assert-Equal $false $fwNull.Tpm.Present 'null tpm' }
+
 Write-Host "`n$script:Pass passed, $script:Fail failed`n"
 if ($script:Fail) { exit 1 } else { exit 0 }

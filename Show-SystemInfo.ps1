@@ -1483,6 +1483,56 @@ function Get-GpuSensorInfo {
     } catch { return $null }
 }
 
+function Get-FirmwareInfo {
+    # Firmware + platform-security facts for New-FirmwareReport, all from no-admin
+    # sources (the authoritative Get-Tpm / Confirm-SecureBootUEFI need admin, so we
+    # use the registry + the PnP SecurityDevices friendly name instead). Firmware
+    # type is derived from the SecureBoot\State key's presence. Self-guarding;
+    # always returns a bundle (never $null); verified via the -Console run.
+    $bios = $null
+    try { $bios = Get-CimInstance Win32_BIOS -ErrorAction Stop | Select-Object -First 1 } catch { }
+
+    $sbKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot\State'
+    $isUefi = Test-Path $sbKey
+    $sbEnabled = $null
+    if ($isUefi) {
+        try { $sbEnabled = [int](Get-ItemProperty -Path $sbKey -Name UEFISecureBootEnabled -ErrorAction Stop).UEFISecureBootEnabled } catch { }
+    }
+
+    $tpmName = $null
+    try {
+        $tpmDev = Get-CimInstance Win32_PnPEntity -ErrorAction Stop |
+                  Where-Object { $_.PNPClass -eq 'SecurityDevices' -and $_.Name -match 'Trusted Platform|TPM' } |
+                  Select-Object -First 1
+        if ($tpmDev) { $tpmName = "$($tpmDev.Name)".Trim() }
+    } catch { }
+
+    $osBuild = $null
+    try { $osBuild = [int](Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).BuildNumber } catch { }
+    $ramBytes = $null
+    try { $ramBytes = (Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).TotalPhysicalMemory } catch { }
+    $sysDriveBytes = $null
+    try {
+        $sd = "$env:SystemDrive".TrimEnd('\')
+        $sysDriveBytes = (Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='$sd'" -ErrorAction Stop).Size
+    } catch { }
+    $addrWidth = $null
+    try { $addrWidth = [int](Get-CimInstance Win32_Processor -ErrorAction Stop | Select-Object -First 1).AddressWidth } catch { }
+
+    [pscustomobject]@{
+        BiosVendor    = if ($bios) { "$($bios.Manufacturer)".Trim() } else { $null }
+        BiosVersion   = if ($bios) { "$($bios.SMBIOSBIOSVersion)".Trim() } else { $null }
+        BiosDate      = if ($bios) { $bios.ReleaseDate } else { $null }
+        IsUefi        = $isUefi
+        SecureBootRaw = $sbEnabled
+        TpmName       = $tpmName
+        OsBuild       = $osBuild
+        RamBytes      = $ramBytes
+        SysDriveBytes = $sysDriveBytes
+        AddressWidth  = $addrWidth
+    }
+}
+
 # =====================================================================
 # Renderers
 # =====================================================================
@@ -2199,6 +2249,7 @@ function Invoke-SystemInfo {
         $loadRaw = Get-LoadInfo
         $netRaw  = Get-NetworkInfo
         $gsRaw   = Get-GpuSensorInfo
+        $fwRaw   = Get-FirmwareInfo
     } catch {
         $err = "Couldn't read system info from Windows (CIM/WMI): $($_.Exception.Message)"
         if ($Console) { Write-Output $err; return }
@@ -2247,7 +2298,9 @@ function Invoke-SystemInfo {
                             -SwThermal $gsRaw.SwThermal -HwThermal $gsRaw.HwThermal
     } else { $null }
 
-    $report = New-SystemReport -Cpu $cpu -Memory $memory -Gpu $gpu -Storage $storage -Battery $battery -Load $load -Network $network -GpuSensor $gpuSensor
+    $firmware = New-FirmwareReport -Raw $fwRaw
+
+    $report = New-SystemReport -Cpu $cpu -Memory $memory -Gpu $gpu -Storage $storage -Battery $battery -Load $load -Network $network -GpuSensor $gpuSensor -Firmware $firmware
 
     if ($Console) { Write-SystemConsole $report; return }
 

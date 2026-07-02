@@ -807,5 +807,14 @@ $repFw = New-SystemReport -Cpu $cpuDev -Memory $memDual -Gpu $gpu -Storage $st -
 It 'fw report section' { Assert-Equal 'UEFI' $repFw.Firmware.FirmwareType 'section' }
 It 'fw report no arg'  { Assert-Equal '' "$((New-SystemReport -Cpu $cpuDev -Memory $memDual).Firmware)" 'null default' }
 
+Write-Host "`nWrite-SystemConsole (Firmware & Security)" -ForegroundColor Cyan
+$conFw = (Write-SystemConsole (New-SystemReport -Cpu $cpuDev -Memory $memDual -Gpu $gpu -Storage $st -Firmware $fwWin11) | Out-String)
+It 'fw console header'    { Assert-Equal $true ([bool]($conFw -match 'Firmware & Security')) 'header' }
+It 'fw console tpm'       { Assert-Equal $true ([bool]($conFw -match 'TPM')) 'tpm' }
+It 'fw console readiness' { Assert-Equal $true ([bool]($conFw -match 'Windows 11 readiness')) 'readiness' }
+It 'fw console verdict'   { Assert-Equal $true ([bool]($conFw -match 'running Windows 11')) 'verdict' }
+$conNoFw = (Write-SystemConsole (New-SystemReport -Cpu $cpuDev -Memory $memDual -Gpu $gpu -Storage $st) | Out-String)
+It 'fw console absent'    { Assert-Equal $false ([bool]($conNoFw -match 'Firmware & Security')) 'absent' }
+
 Write-Host "`n$script:Pass passed, $script:Fail failed`n"
 if ($script:Fail) { exit 1 } else { exit 0 }

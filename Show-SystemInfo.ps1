@@ -1653,6 +1653,29 @@ function Write-SystemConsole {
         '  (tiering is approximate / generation-level)'
         ''
     }
+    if ($Report.Firmware) {
+        $fw = $Report.Firmware
+        $biosStr = if ($fw.Bios.Version) {
+            "$(if ($fw.Bios.Vendor) { $fw.Bios.Vendor + ' ' } else { '' })$($fw.Bios.Version)" + $(if ($fw.Bios.ReleaseDate) { ' ({0:MMM yyyy})' -f $fw.Bios.ReleaseDate } else { '' })
+        } else { 'Unknown' }
+        $tpmStr = if ($fw.Tpm.Present) { if ($fw.Tpm.Version) { $fw.Tpm.Version } else { 'Present (version unknown)' } } else { 'Not detected' }
+        '  Firmware & Security'
+        '  -------------------'
+        '  BIOS             : {0}' -f $biosStr
+        '  Firmware type    : {0}' -f $(if ($fw.FirmwareType) { $fw.FirmwareType } else { 'Unknown' })
+        '  Secure Boot      : {0}' -f $(if ($fw.SecureBoot) { $fw.SecureBoot } else { 'Unknown' })
+        '  TPM              : {0}' -f $tpmStr
+        if ($fw.Win11) {
+            '  Windows 11 readiness'
+            foreach ($r in $fw.Win11.Requirements) {
+                $mark = if ($r.Met -is [bool] -and $r.Met) { 'OK' } elseif ($r.Met -is [bool]) { 'NO' } else { '??' }
+                '    [{0}] {1} - {2}' -f $mark, $r.Name, $r.Detail
+            }
+            '  Verdict          : {0}' -f $fw.Win11.Summary
+        }
+        '  (firmware/security read without admin, best-effort; CPU-model requirement not checked here)'
+        ''
+    }
     if ($Report.Upgrade) {
         $up = $Report.Upgrade
         '  Upgrade Advisor'

@@ -29,7 +29,8 @@ $st = New-StorageReport -Disks $rawDisks -Volumes $rawVols
 $bat = New-BatteryReport -ChargePercent 100 -IsOnAC $true -IsCharging $false -DesignCapacityMWh 95065 -FullChargeCapacityMWh 52166 -CycleCount 0 -Chemistry 'LiP' -Manufacturer 'SMP' -PowerPlan 'Balanced' -PowerPlanGuid '381b4222-f694-41f0-9685-ff5bb260df2e'
 $load = New-LoadReport -TotalPhysicalBytes 17179869184 -AvailableBytes 1000000000 -CommittedBytes (52000*1MB) -CommitLimitBytes (54512*1MB) -PercentCommitted 95 -PageReadsPerSec 3000
 $net = New-NetworkReport -Adapters @([pscustomobject]@{ Name='Wi-Fi'; PhysicalMediaType='Native 802.11'; SpeedBps=324000000; Wlan=([pscustomobject]@{ State='connected'; Band='5 GHz'; RadioType='802.11ax'; SignalPercent=80; ReceiveMbps=360; TransmitMbps=324 }); MaxSupportedMbps=$null })
-$report = New-SystemReport -Cpu $cpu -Memory $mem -Gpu $gpu -Storage $st -Battery $bat -Load $load -Network $net
+$gsen = New-GpuSensorReport -Name 'NVIDIA GeForce RTX 2060 with Max-Q Design' -TempC 50 -UtilPercent 0 -ClockMHz 300 -MaxClockMHz 2100 -PowerW 8.38 -PState 'P8' -SwThermal 'Not Active' -HwThermal 'Not Active'
+$report = New-SystemReport -Cpu $cpu -Memory $mem -Gpu $gpu -Storage $st -Battery $bat -Load $load -Network $net -GpuSensor $gsen
 $reportNoBat = New-SystemReport -Cpu $cpu -Memory $mem -Gpu $gpu -Storage $st
 
 # recursively collect all control text (labels, textboxes) under a control
@@ -66,6 +67,9 @@ try {
     $glv = $gpuTab.Controls | Where-Object { $_ -is [System.Windows.Forms.ListView] } | Select-Object -First 1
     Check ($null -ne $glv)         'GPU tab has a ListView'
     Check ($glv.Items.Count -eq 2) 'two GPU rows'
+    $gpuText = (Get-AllText $gpuTab) -join "`n"
+    Check ([bool]($gpuText -match 'Temperature')) 'GPU tab shows sensor panel'
+    Check ([bool]($gpuText -match 'nvidia-smi'))  'GPU sensor panel labelled live'
 
     $storTab = $tabControl.TabPages | Where-Object { $_.Text -eq 'Storage' } | Select-Object -First 1
     $storLvs = @()
@@ -109,6 +113,8 @@ try {
     Check (-not ($names2 -contains 'Battery')) 'desktop: no Battery tab'
     Check (-not ($names2 -contains 'Live'))    'no-load: no Live tab'
     Check (-not ($names2 -contains 'Network')) 'no-net: no Network tab'
+    $gpu2 = $tc2.TabPages | Where-Object { $_.Text -eq 'GPU' } | Select-Object -First 1
+    Check (-not ((Get-AllText $gpu2) -join "`n" -match 'nvidia-smi')) 'no-sensor: GPU tab has no sensor panel'
     $ov2 = $tc2.TabPages | Where-Object { $_.Text -eq 'Overview' } | Select-Object -First 1
     $ov2Text = (Get-AllText $ov2) -join "`n"
     Check ([bool]($ov2Text -match 'none \(AC only\)')) 'desktop: Overview shows none (AC only)'

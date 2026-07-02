@@ -535,5 +535,61 @@ It 'console net tbl'  { Assert-Equal $true  ([bool]($conNet -match 'Standard')) 
 $conNoNet2 = (Write-SystemConsole $repNoNet | Out-String)
 It 'console no net'   { Assert-Equal $false ([bool]($conNoNet2 -match 'Network')) 'no net -> no section' }
 
+# =====================================================================
+# GPU sensors / thermals (nvidia-smi) (slice G)
+# =====================================================================
+
+Write-Host "`nConvertFrom-NvidiaSmiCsv" -ForegroundColor Cyan
+$smi = ConvertFrom-NvidiaSmiCsv -Line 'NVIDIA GeForce RTX 2060 with Max-Q Design, 50, 0, 300, 2100, 8.38, P8, Not Active, Not Active'
+It 'smi name'   { Assert-Equal 'NVIDIA GeForce RTX 2060 with Max-Q Design' $smi.Name 'name' }
+It 'smi temp'   { Assert-Equal 50   $smi.TempC 'temp' }
+It 'smi util'   { Assert-Equal 0    $smi.UtilPercent 'util' }
+It 'smi clock'  { Assert-Equal 300  $smi.ClockMHz 'clock' }
+It 'smi maxclk' { Assert-Equal 2100 $smi.MaxClockMHz 'max clock' }
+It 'smi power'  { Assert-Equal 8.38 $smi.PowerW 'power' }
+It 'smi pstate' { Assert-Equal 'P8' $smi.PState 'pstate' }
+It 'smi sw'     { Assert-Equal 'Not Active' $smi.SwThermal 'sw thermal' }
+It 'smi na pwr' { Assert-Equal $null (ConvertFrom-NvidiaSmiCsv -Line 'X, 50, 0, 300, 2100, [N/A], P0, Active, Not Active').PowerW 'N/A power -> null' }
+It 'smi empty'  { Assert-Equal $null (ConvertFrom-NvidiaSmiCsv -Line '').TempC 'empty -> null' }
+
+Write-Host "`nNew-GpuSensorReport" -ForegroundColor Cyan
+$gs = New-GpuSensorReport -Name 'RTX 2060' -TempC 50 -UtilPercent 0 -ClockMHz 300 -MaxClockMHz 2100 -PowerW 8.38 -PState 'P8' -SwThermal 'Not Active' -HwThermal 'Not Active'
+It 'gs temp'       { Assert-Equal 50 $gs.TempC 'temp passthrough' }
+It 'gs throttle0'  { Assert-Equal $false $gs.ThermalThrottle 'not active -> false' }
+$gsThr = New-GpuSensorReport -Name 'RTX 2060' -TempC 88 -UtilPercent 99 -ClockMHz 1200 -MaxClockMHz 2100 -PowerW 80 -PState 'P0' -SwThermal 'Active' -HwThermal 'Not Active'
+It 'gs throttle sw' { Assert-Equal $true $gsThr.ThermalThrottle 'sw active -> true' }
+$gsHw = New-GpuSensorReport -Name 'x' -TempC 90 -UtilPercent 100 -ClockMHz 1000 -MaxClockMHz 2100 -PowerW 80 -PState 'P0' -SwThermal 'Not Active' -HwThermal 'Active'
+It 'gs throttle hw' { Assert-Equal $true $gsHw.ThermalThrottle 'hw active -> true' }
+
+Write-Host "`nGet-GpuSensorInsights" -ForegroundColor Cyan
+$giThr = Get-GpuSensorInsights -GpuSensor $gsThr
+It 'gs thr warn'  { Assert-Equal 'warn' (@($giThr)[0].Kind) 'throttle -> warn' }
+It 'gs thr txt'   { Assert-Equal $true (HasNote $giThr 'thermally throttling') 'throttle text' }
+$giHot = Get-GpuSensorInsights -GpuSensor (New-GpuSensorReport -Name 'x' -TempC 90 -SwThermal 'Not Active' -HwThermal 'Not Active')
+It 'gs hot info'  { Assert-Equal $true (HasNote $giHot 'running hot') 'hot -> info' }
+It 'gs hot kind'  { Assert-Equal 'info' (@($giHot | Where-Object { $_.Text -match 'running hot' })[0].Kind) 'hot info kind' }
+$giIdle = Get-GpuSensorInsights -GpuSensor $gs
+It 'gs idle none' { Assert-Equal 0 (@($giIdle).Count) 'idle 50C -> no note' }
+
+Write-Host "`nSystem report (GpuSensor wiring)" -ForegroundColor Cyan
+$sysGs = Get-SystemInsights -Cpu $cpuDev -Memory $memDual -Gpu $gpu -Storage $st -GpuSensor $gsThr
+It 'sys has gs note' { Assert-Equal $true (HasNote $sysGs 'thermally throttling') 'gs note in sys insights' }
+$sysNoGs = Get-SystemInsights -Cpu $cpuDev -Memory $memDual -Gpu $gpu -Storage $st -GpuSensor $null
+It 'sys null gs ok'   { Assert-Equal $false (HasNote $sysNoGs 'throttling') 'null gs -> no note, no error' }
+$repGs = New-SystemReport -Cpu $cpuDev -Memory $memDual -Gpu $gpu -Storage $st -GpuSensor $gs
+It 'report has gs'    { Assert-Equal 50 $repGs.GpuSensor.TempC 'gs section in report' }
+$repGsThr = New-SystemReport -Cpu $cpuDev -Memory $memDual -Gpu $gpu -Storage $st -GpuSensor $gsThr
+It 'report gs note'   { Assert-Equal $true (HasNote $repGsThr.Insights 'thermally throttling') 'gs note flows to report' }
+$repNoGs = New-SystemReport -Cpu $cpuDev -Memory $memDual -Gpu $gpu -Storage $st
+It 'report null gs'   { Assert-Equal $null $repNoGs.GpuSensor 'no gs -> null section' }
+
+Write-Host "`nWrite-SystemConsole (GPU sensors)" -ForegroundColor Cyan
+$repGsFull = New-SystemReport -Cpu $cpuDev -Memory $memDual -Gpu $gpu -Storage $st -GpuSensor $gs
+$conGs = (Write-SystemConsole $repGsFull | Out-String)
+It 'console gs sect' { Assert-Equal $true  ([bool]($conGs -match 'GPU sensors')) 'gs section present' }
+It 'console gs temp' { Assert-Equal $true  ([bool]($conGs -match 'Temperature')) 'temp label (section-unique)' }
+$conNoGs = (Write-SystemConsole $repNoGs | Out-String)
+It 'console no gs'   { Assert-Equal $false ([bool]($conNoGs -match 'GPU sensors')) 'no gs -> no section' }
+
 Write-Host "`n$script:Pass passed, $script:Fail failed`n"
 if ($script:Fail) { exit 1 } else { exit 0 }

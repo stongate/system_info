@@ -578,6 +578,46 @@ function New-NetworkReport {
     [pscustomobject]@{ Adapters = $list }
 }
 
+function ConvertFrom-NvidiaSmiCsv {
+    # Pure parse of one `nvidia-smi --query-gpu=... --format=csv,noheader,nounits`
+    # line: name,temp,util,clock,maxclock,power,pstate,sw_thermal,hw_thermal.
+    param([string] $Line)
+    $out = [pscustomobject]@{ Name = $null; TempC = $null; UtilPercent = $null; ClockMHz = $null; MaxClockMHz = $null; PowerW = $null; PState = $null; SwThermal = $null; HwThermal = $null }
+    if ([string]::IsNullOrWhiteSpace($Line)) { return $out }
+    $f = @($Line -split ',' | ForEach-Object { $_.Trim() })
+    if ($f.Count -lt 9) { return $out }
+
+    function _str($s) { if ([string]::IsNullOrWhiteSpace($s) -or $s -eq '[N/A]') { return $null } return $s }
+    function _int($s) { $v = 0; if ($s -and $s -ne '[N/A]' -and [int]::TryParse($s, [ref]$v)) { return $v } return $null }
+    function _dbl($s) { $v = 0.0; if ($s -and $s -ne '[N/A]' -and [double]::TryParse($s, [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$v)) { return $v } return $null }
+
+    $out.Name        = _str $f[0]
+    $out.TempC       = _int $f[1]
+    $out.UtilPercent = _int $f[2]
+    $out.ClockMHz    = _int $f[3]
+    $out.MaxClockMHz = _int $f[4]
+    $out.PowerW      = _dbl $f[5]
+    $out.PState      = _str $f[6]
+    $out.SwThermal   = _str $f[7]
+    $out.HwThermal   = _str $f[8]
+    return $out
+}
+
+function New-GpuSensorReport {
+    # Build the GpuSensor section (pure) from parsed nvidia-smi fields.
+    param($Name = $null, $TempC = $null, $UtilPercent = $null, $ClockMHz = $null, $MaxClockMHz = $null, $PowerW = $null, $PState = $null, $SwThermal = $null, $HwThermal = $null)
+    [pscustomobject]@{
+        Name            = if ($Name) { "$Name".Trim() } else { $null }
+        TempC           = $TempC
+        UtilPercent     = $UtilPercent
+        ClockMHz        = $ClockMHz
+        MaxClockMHz     = $MaxClockMHz
+        PowerW          = $PowerW
+        PState          = $PState
+        ThermalThrottle = ("$SwThermal" -eq 'Active' -or "$HwThermal" -eq 'Active')
+    }
+}
+
 # =====================================================================
 # Insights / bottlenecks (pure)
 # =====================================================================
@@ -789,9 +829,25 @@ function Get-NetworkInsights {
     return , @($notes)
 }
 
+function Get-GpuSensorInsights {
+    # GPU thermal notes from live nvidia-smi data. The throttle flag is
+    # authoritative; the temperature threshold is a supplementary heuristic.
+    param([object] $GpuSensor)
+    $notes = @()
+    if ($null -eq $GpuSensor) { return , @($notes) }
+    $temp = $GpuSensor.TempC
+    if ($GpuSensor.ThermalThrottle -eq $true) {
+        $t = if ($null -ne $temp) { "$($temp)$([char]176)C" } else { 'hot' }
+        $notes += [pscustomobject]@{ Kind = 'warn'; Text = "The GPU is thermally throttling right now ($t) - it's hot enough that it's reducing clocks. Improve airflow/cooling (clean the fans, raise the laptop, or check the thermal paste)." }
+    } elseif ($null -ne $temp -and [int]$temp -ge 87) {
+        $notes += [pscustomobject]@{ Kind = 'info'; Text = "GPU is running hot ($($temp)$([char]176)C), near the throttle point; keep an eye on cooling." }
+    }
+    return , @($notes)
+}
+
 function Get-SystemInsights {
     # Orchestrator: per-subsystem notes plus cross-subsystem bottleneck notes.
-    param([object] $Cpu, [object] $Memory, [object] $Gpu = $null, [object] $Storage = $null, [object] $Battery = $null, [object] $Load = $null, [object] $Network = $null)
+    param([object] $Cpu, [object] $Memory, [object] $Gpu = $null, [object] $Storage = $null, [object] $Battery = $null, [object] $Load = $null, [object] $Network = $null, [object] $GpuSensor = $null)
     # Assign sub-results first (their ,@() returns unwrap to clean arrays), then
     # concatenate with +=. Wrapping the calls in @() here would nest each result
     # as a single sub-array element, merging multiple notes into one.
@@ -828,6 +884,10 @@ function Get-SystemInsights {
         $networkNotes = Get-NetworkInsights -Network $Network
         $notes += $networkNotes
     }
+    if ($null -ne $GpuSensor) {
+        $gpuSensorNotes = Get-GpuSensorInsights -GpuSensor $GpuSensor
+        $notes += $gpuSensorNotes
+    }
 
     # Cross note: many cores starved by single-channel memory bandwidth.
     if ($Memory.PopulatedSlots -eq 1 -and $Memory.TotalSlots -ge 2 -and $null -ne $Cpu.Cores -and [int]$Cpu.Cores -ge 6) {
@@ -849,17 +909,18 @@ function Get-SystemInsights {
 
 function New-SystemReport {
     # Compose the subsystem sections and run the insight engine.
-    param([object] $Cpu, [object] $Memory, [object] $Gpu = $null, [object] $Storage = $null, [object] $Battery = $null, [object] $Load = $null, [object] $Network = $null)
-    $insights = Get-SystemInsights -Cpu $Cpu -Memory $Memory -Gpu $Gpu -Storage $Storage -Battery $Battery -Load $Load -Network $Network
+    param([object] $Cpu, [object] $Memory, [object] $Gpu = $null, [object] $Storage = $null, [object] $Battery = $null, [object] $Load = $null, [object] $Network = $null, [object] $GpuSensor = $null)
+    $insights = Get-SystemInsights -Cpu $Cpu -Memory $Memory -Gpu $Gpu -Storage $Storage -Battery $Battery -Load $Load -Network $Network -GpuSensor $GpuSensor
     [pscustomobject]@{
-        Cpu      = $Cpu
-        Memory   = $Memory
-        Gpu      = $Gpu
-        Storage  = $Storage
-        Battery  = $Battery
-        Load     = $Load
-        Network  = $Network
-        Insights = $insights
+        Cpu       = $Cpu
+        Memory    = $Memory
+        Gpu       = $Gpu
+        Storage   = $Storage
+        Battery   = $Battery
+        Load      = $Load
+        Network   = $Network
+        GpuSensor = $GpuSensor
+        Insights  = $insights
     }
 }
 
@@ -1087,6 +1148,22 @@ function Get-NetworkInfo {
     [pscustomobject]@{ Adapters = $adapters }
 }
 
+function Get-GpuSensorInfo {
+    # Live NVIDIA GPU sensors via nvidia-smi (first GPU). Returns $null unless
+    # nvidia-smi resolves and the query succeeds. Self-guarding; verified via -Console.
+    if (-not (Get-Command nvidia-smi -ErrorAction SilentlyContinue)) { return $null }
+    try {
+        $q = 'name,temperature.gpu,utilization.gpu,clocks.gr,clocks.max.gr,power.draw,pstate,clocks_throttle_reasons.sw_thermal_slowdown,clocks_throttle_reasons.hw_thermal_slowdown'
+        $out = & nvidia-smi "--query-gpu=$q" '--format=csv,noheader,nounits' 2>$null
+        if ($LASTEXITCODE -ne 0) { return $null }
+        $line = @($out | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })[0]
+        if ([string]::IsNullOrWhiteSpace($line)) { return $null }
+        $parsed = ConvertFrom-NvidiaSmiCsv -Line $line
+        if ($null -eq $parsed.Name) { return $null }
+        return $parsed
+    } catch { return $null }
+}
+
 # =====================================================================
 # Renderers
 # =====================================================================
@@ -1219,6 +1296,24 @@ function Write-SystemConsole {
                                     @{n='Band';e={ $_.Band }},
                                     @{n='Standard';e={ $_.Standard }} |
             Out-String).TrimEnd()
+        ''
+    }
+    if ($Report.GpuSensor) {
+        $gsr = $Report.GpuSensor
+        $gt  = if ($null -ne $gsr.TempC) { "$($gsr.TempC)$([char]176)C" } else { 'Unknown' }
+        $gu  = if ($null -ne $gsr.UtilPercent) { "$($gsr.UtilPercent)%" } else { 'Unknown' }
+        $gclk = if ($null -ne $gsr.ClockMHz) { "$($gsr.ClockMHz)" + $(if ($null -ne $gsr.MaxClockMHz) { " / $($gsr.MaxClockMHz)" } else { '' }) + ' MHz' } else { 'Unknown' }
+        $gpw = if ($null -ne $gsr.PowerW) { '{0:N1} W' -f $gsr.PowerW } else { 'Unknown' }
+        '  GPU sensors'
+        '  -----------'
+        '  GPU              : {0}' -f $(if ($gsr.Name) { $gsr.Name } else { 'Unknown' })
+        '  Temperature      : {0}' -f $gt
+        '  Utilization      : {0}' -f $gu
+        '  Core clock       : {0}' -f $gclk
+        '  Power draw       : {0}' -f $gpw
+        '  Performance state: {0}' -f $(if ($gsr.PState) { $gsr.PState } else { 'Unknown' })
+        if ($gsr.ThermalThrottle) { '  Thermal throttle : YES (reducing clocks)' }
+        '  (live, via nvidia-smi)'
         ''
     }
     if (@($Report.Insights).Count -gt 0) {
@@ -1385,6 +1480,28 @@ function New-SystemForm {
     }.GetNewClosure()
     $glist.Add_Resize($gFill)
     & $gFill
+    # Live GPU sensor panel (nvidia-smi), docked below the adapter list.
+    if ($null -ne $Report.GpuSensor) {
+        $gsr = $Report.GpuSensor
+        $gsPanel = New-Object System.Windows.Forms.Panel
+        $gsPanel.Dock = 'Bottom'; $gsPanel.Height = 132
+        $gsHdr = New-Object System.Windows.Forms.Label
+        $gsHdr.Text = 'GPU sensors (live, via nvidia-smi)'
+        $gsHdr.Location = New-Object System.Drawing.Point(4, 2); $gsHdr.AutoSize = $true
+        $gsHdr.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+        $gsPanel.Controls.Add($gsHdr)
+        $gsKeys = @('Temperature:', 'Utilization:', 'Core clock:', 'Power draw:', 'Perf. state:')
+        $gsVals = @(
+            $(if ($null -ne $gsr.TempC) { "$($gsr.TempC)$([char]176)C" } else { 'Unknown' })
+            $(if ($null -ne $gsr.UtilPercent) { "$($gsr.UtilPercent)%" } else { 'Unknown' })
+            $(if ($null -ne $gsr.ClockMHz) { "$($gsr.ClockMHz)$(if ($null -ne $gsr.MaxClockMHz) { " / $($gsr.MaxClockMHz)" }) MHz" } else { 'Unknown' })
+            $(if ($null -ne $gsr.PowerW) { '{0:N1} W' -f $gsr.PowerW } else { 'Unknown' })
+            $(if ($gsr.PState) { $gsr.PState } else { 'Unknown' })
+        )
+        if ($gsr.ThermalThrottle) { $gsKeys += 'Thermal:'; $gsVals += 'THROTTLING (reducing clocks)' }
+        [void](Add-KvBlock -Parent $gsPanel -Keys $gsKeys -Values $gsVals -X 4 -Y 24 -KeyW 110 -ValW 320)
+        $tabGpu.Controls.Add($gsPanel)
+    }
     [void]$tabs.TabPages.Add($tabGpu)
 
     # --- Memory tab ---
@@ -1615,6 +1732,7 @@ function Invoke-SystemInfo {
         $batRaw  = Get-BatteryInfo
         $loadRaw = Get-LoadInfo
         $netRaw  = Get-NetworkInfo
+        $gsRaw   = Get-GpuSensorInfo
     } catch {
         $err = "Couldn't read system info from Windows (CIM/WMI): $($_.Exception.Message)"
         if ($Console) { Write-Output $err; return }
@@ -1657,8 +1775,13 @@ function Invoke-SystemInfo {
                        -PercentCommitted $loadRaw.PercentCommitted -PageReadsPerSec $loadRaw.PageReadsPerSec
     } else { $null }
     $network = New-NetworkReport -Adapters $netRaw.Adapters
+    $gpuSensor = if ($null -ne $gsRaw) {
+        New-GpuSensorReport -Name $gsRaw.Name -TempC $gsRaw.TempC -UtilPercent $gsRaw.UtilPercent -ClockMHz $gsRaw.ClockMHz `
+                            -MaxClockMHz $gsRaw.MaxClockMHz -PowerW $gsRaw.PowerW -PState $gsRaw.PState `
+                            -SwThermal $gsRaw.SwThermal -HwThermal $gsRaw.HwThermal
+    } else { $null }
 
-    $report = New-SystemReport -Cpu $cpu -Memory $memory -Gpu $gpu -Storage $storage -Battery $battery -Load $load -Network $network
+    $report = New-SystemReport -Cpu $cpu -Memory $memory -Gpu $gpu -Storage $storage -Battery $battery -Load $load -Network $network -GpuSensor $gpuSensor
 
     if ($Console) { Write-SystemConsole $report; return }
 

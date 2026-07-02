@@ -1811,7 +1811,7 @@ function New-SystemForm {
 
     $ovTop = New-Object System.Windows.Forms.Panel
     $ovTop.Dock = 'Top'
-    $ovTop.Height = 194
+    $ovTop.Height = 214
     $cpuLine = "$($cpu.Name)  -  $($cpu.Cores)C / $($cpu.Threads)T" + $(if ($cpu.Codename) { ", $($cpu.Codename)" } else { '' })
     $memLine = "$($mem.TotalInstalledGB) GB $($mem.TypeName)  -  $($mem.PopulatedSlots)/$($mem.TotalSlots) slots, max $maxCap"
     $gpuParts = @()
@@ -1842,7 +1842,15 @@ function New-SystemForm {
         $g = $Report.Gaming
         "$($g.Verdict)" + $(if (@($g.Limiters).Count -gt 0) { " (limited by $($g.Limiters -join ', '))" } else { '' })
     } else { 'Unknown' }
-    $oy = Add-KvBlock -Parent $ovTop -Keys @('Processor:', 'Graphics:', 'Memory:', 'Storage:', 'Battery:', 'Network:', 'Gaming:') -Values @($cpuLine, $gpuLine, $memLine, $storageLine, $batteryLine, $networkLine, $gamingLine) -X 4 -Y 6 -KeyW 90 -ValW 460
+    $securityLine = if ($null -ne $Report.Firmware) {
+        $fwo = $Report.Firmware
+        $segs = @()
+        if ($fwo.SecureBoot) { $segs += "Secure Boot $($fwo.SecureBoot)" }
+        if ($fwo.Tpm.Present) { $segs += $(if ($fwo.Tpm.Version) { "TPM $($fwo.Tpm.Version)" } else { 'TPM present' }) } else { $segs += 'No TPM' }
+        if ($fwo.FirmwareType) { $segs += $fwo.FirmwareType }
+        if ($segs.Count) { $segs -join '  -  ' } else { 'Unknown' }
+    } else { 'Unknown' }
+    $oy = Add-KvBlock -Parent $ovTop -Keys @('Processor:', 'Graphics:', 'Memory:', 'Storage:', 'Battery:', 'Network:', 'Gaming:', 'Security:') -Values @($cpuLine, $gpuLine, $memLine, $storageLine, $batteryLine, $networkLine, $gamingLine, $securityLine) -X 4 -Y 6 -KeyW 90 -ValW 460
     $notesHeader = New-Object System.Windows.Forms.Label
     $notesHeader.Text = 'Notes / Bottlenecks:'
     $notesHeader.Location = New-Object System.Drawing.Point(4, ($oy + 2))
@@ -2148,6 +2156,65 @@ function New-SystemForm {
         $nFill = { $o = 0; for ($i = 1; $i -lt $netList.Columns.Count; $i++) { $o += $netList.Columns[$i].Width }; $f = $netList.ClientSize.Width - $o; if ($f -gt 120) { $netList.Columns[0].Width = $f } }.GetNewClosure()
         $netList.Add_Resize($nFill); & $nFill
         [void]$tabs.TabPages.Add($tabNet)
+    }
+
+    # --- Firmware & Security tab (present whenever firmware was read;
+    #     Invoke-SystemInfo always collects it, so it is effectively always shown) ---
+    if ($null -ne $Report.Firmware) {
+        $fw = $Report.Firmware
+        $tabFw = New-Object System.Windows.Forms.TabPage
+        $tabFw.Text = 'Firmware & Security'
+        $tabFw.Padding = New-Object System.Windows.Forms.Padding(8, 8, 8, 8)
+
+        $biosStr = if ($fw.Bios.Version) {
+            "$(if ($fw.Bios.Vendor) { $fw.Bios.Vendor + ' ' } else { '' })$($fw.Bios.Version)" + $(if ($fw.Bios.ReleaseDate) { ' ({0:MMM yyyy})' -f $fw.Bios.ReleaseDate } else { '' })
+        } else { 'Unknown' }
+        $tpmStr = if ($fw.Tpm.Present) { if ($fw.Tpm.Version) { $fw.Tpm.Version } else { 'Present (version unknown)' } } else { 'Not detected' }
+        $fwKeys = @('BIOS:', 'Firmware type:', 'Secure Boot:', 'TPM:')
+        $fwVals = @(
+            $biosStr
+            $(if ($fw.FirmwareType) { $fw.FirmwareType } else { 'Unknown' })
+            $(if ($fw.SecureBoot) { $fw.SecureBoot } else { 'Unknown' })
+            $tpmStr
+        )
+        $fy = Add-KvBlock -Parent $tabFw -Keys $fwKeys -Values $fwVals -KeyW 130 -ValW 420
+
+        if ($fw.Win11) {
+            $rHdr = New-Object System.Windows.Forms.Label
+            $rHdr.Text = 'Windows 11 readiness'
+            $rHdr.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+            $rHdr.Location = New-Object System.Drawing.Point(14, ($fy + 4))
+            $rHdr.AutoSize = $true
+            $tabFw.Controls.Add($rHdr)
+            $ry = $fy + 28
+            $rBody = New-Object System.Windows.Forms.Label
+            $rBody.Text = (@($fw.Win11.Requirements | ForEach-Object {
+                $mark = if ($_.Met -is [bool] -and $_.Met) { '[OK]' } elseif ($_.Met -is [bool]) { '[--]' } else { '[ ?]' }
+                "$mark $($_.Name) - $($_.Detail)"
+            }) -join "`r`n")
+            $rBody.Location = New-Object System.Drawing.Point(20, $ry)
+            $rBody.AutoSize = $true
+            $tabFw.Controls.Add($rBody)
+            $ry += ($fw.Win11.Requirements.Count * 20) + 8
+
+            $sumLbl = New-Object System.Windows.Forms.Label
+            $sumLbl.Text = $fw.Win11.Summary
+            $sumLbl.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+            $sumLbl.Location = New-Object System.Drawing.Point(14, ($ry + 2))
+            $sumLbl.MaximumSize = New-Object System.Drawing.Size(560, 0)
+            $sumLbl.AutoSize = $true
+            $tabFw.Controls.Add($sumLbl)
+            $fy = $ry + $sumLbl.PreferredHeight + 6
+        }
+
+        $fwCap = New-Object System.Windows.Forms.Label
+        $fwCap.Text = "Firmware/security facts are read without admin (best-effort). The CPU-model requirement isn't checked here - verify it against Microsoft's list."
+        $fwCap.Location = New-Object System.Drawing.Point(14, ($fy + 6))
+        $fwCap.MaximumSize = New-Object System.Drawing.Size(580, 0)
+        $fwCap.AutoSize = $true
+        $fwCap.ForeColor = [System.Drawing.Color]::Gray
+        $tabFw.Controls.Add($fwCap)
+        [void]$tabs.TabPages.Add($tabFw)
     }
 
     # --- Upgrade tab (synthesis; always present - every machine can be assessed) ---

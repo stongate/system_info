@@ -30,8 +30,9 @@ $bat = New-BatteryReport -ChargePercent 100 -IsOnAC $true -IsCharging $false -De
 $load = New-LoadReport -TotalPhysicalBytes 17179869184 -AvailableBytes 1000000000 -CommittedBytes (52000*1MB) -CommitLimitBytes (54512*1MB) -PercentCommitted 95 -PageReadsPerSec 3000
 $net = New-NetworkReport -Adapters @([pscustomobject]@{ Name='Wi-Fi'; PhysicalMediaType='Native 802.11'; SpeedBps=324000000; Wlan=([pscustomobject]@{ State='connected'; Band='5 GHz'; RadioType='802.11ax'; SignalPercent=80; ReceiveMbps=360; TransmitMbps=324 }); MaxSupportedMbps=$null })
 $gsen = New-GpuSensorReport -Name 'NVIDIA GeForce RTX 2060 with Max-Q Design' -TempC 50 -UtilPercent 0 -ClockMHz 300 -MaxClockMHz 2100 -PowerW 8.38 -PState 'P8' -SwThermal 'Not Active' -HwThermal 'Not Active'
-$report = New-SystemReport -Cpu $cpu -Memory $mem -Gpu $gpu -Storage $st -Battery $bat -Load $load -Network $net -GpuSensor $gsen
-$reportNoBat = New-SystemReport -Cpu $cpu -Memory $mem -Gpu $gpu -Storage $st
+$fw = New-FirmwareReport -Raw ([pscustomobject]@{ BiosVendor='Dell Inc.'; BiosVersion='1.33.1'; BiosDate=[datetime]'2024-11-17'; IsUefi=$true; SecureBootRaw=1; TpmName='Trusted Platform Module 2.0'; OsBuild=26200; RamBytes=17179869184; SysDriveBytes=1024209543168; AddressWidth=64 })
+$report = New-SystemReport -Cpu $cpu -Memory $mem -Gpu $gpu -Storage $st -Battery $bat -Load $load -Network $net -GpuSensor $gsen -Firmware $fw
+$reportNoBat = New-SystemReport -Cpu $cpu -Memory $mem -Gpu $gpu -Storage $st -Firmware $fw
 
 # recursively collect all control text (labels, textboxes) under a control
 function Get-AllText($ctrl) {
@@ -49,9 +50,9 @@ try {
     Check ($form.Text -eq 'System Info')            'window title'
     $tabControl = $form.Controls | Where-Object { $_ -is [System.Windows.Forms.TabControl] } | Select-Object -First 1
     Check ($null -ne $tabControl)            'has a TabControl'
-    Check ($tabControl.TabPages.Count -eq 10) 'ten tabs'
+    Check ($tabControl.TabPages.Count -eq 11) 'eleven tabs'
     $tabNames = @($tabControl.TabPages | ForEach-Object { $_.Text })
-    Check (($tabNames -contains 'Overview') -and ($tabNames -contains 'CPU') -and ($tabNames -contains 'GPU') -and ($tabNames -contains 'Memory') -and ($tabNames -contains 'Storage') -and ($tabNames -contains 'Gaming') -and ($tabNames -contains 'Battery') -and ($tabNames -contains 'Live') -and ($tabNames -contains 'Network') -and ($tabNames -contains 'Upgrade')) 'Overview/CPU/GPU/Memory/Storage/Gaming/Battery/Live/Network/Upgrade tabs'
+    Check (($tabNames -contains 'Overview') -and ($tabNames -contains 'CPU') -and ($tabNames -contains 'GPU') -and ($tabNames -contains 'Memory') -and ($tabNames -contains 'Storage') -and ($tabNames -contains 'Gaming') -and ($tabNames -contains 'Battery') -and ($tabNames -contains 'Live') -and ($tabNames -contains 'Network') -and ($tabNames -contains 'Firmware & Security') -and ($tabNames -contains 'Upgrade')) 'Overview/CPU/GPU/Memory/Storage/Gaming/Battery/Live/Network/Firmware & Security/Upgrade tabs'
 
     $memTab2 = $tabControl.TabPages | Where-Object { $_.Text -eq 'Memory' } | Select-Object -First 1
     Check ([bool]((Get-AllText $memTab2) -join "`n" -match 'CPU-Z')) 'Memory tab has the MT/s footnote'
@@ -121,12 +122,21 @@ try {
     Check ([bool]($upgText -match 'Hardware upgrades'))  'Upgrade tab shows Hardware upgrades group'
     Check ([bool]($upgText -match 'coarse estimate'))    'Upgrade tab shows the honesty caption'
 
+    $fwTab = $tabControl.TabPages | Where-Object { $_.Text -eq 'Firmware & Security' } | Select-Object -First 1
+    Check ($null -ne $fwTab) 'has Firmware & Security tab'
+    $fwText = (Get-AllText $fwTab) -join "`n"
+    Check ([bool]($fwText -match 'Windows 11 readiness')) 'Firmware tab shows readiness checklist'
+    Check ([bool]($fwText -match 'running Windows 11'))    'Firmware tab shows the summary verdict'
+    Check ([bool]($fwText -match 'Microsoft'))             'Firmware tab shows the honesty caption'
+    Check ([bool]($ovText -match 'Security:'))             'Overview has a Security line'
+
     # No-battery / no-load / no-net case: no Battery/Live/Network tab; Overview says 'none (AC only)'.
     $form2 = New-SystemForm $reportNoBat
     $tc2 = $form2.Controls | Where-Object { $_ -is [System.Windows.Forms.TabControl] } | Select-Object -First 1
     $names2 = @($tc2.TabPages | ForEach-Object { $_.Text })
-    Check ($tc2.TabPages.Count -eq 7)          'desktop: seven tabs (Gaming + Upgrade present; no Battery/Live/Network)'
+    Check ($tc2.TabPages.Count -eq 8)          'desktop: eight tabs (Gaming + Firmware & Security + Upgrade; no Battery/Live/Network)'
     Check ($names2 -contains 'Gaming')         'desktop: Gaming tab present'
+    Check ($names2 -contains 'Firmware & Security') 'desktop: Firmware & Security tab present'
     Check ($names2 -contains 'Upgrade')        'desktop: Upgrade tab present'
     Check (-not ($names2 -contains 'Battery')) 'desktop: no Battery tab'
     Check (-not ($names2 -contains 'Live'))    'no-load: no Live tab'

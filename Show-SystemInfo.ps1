@@ -1972,6 +1972,53 @@ function New-SystemForm {
         [void]$tabs.TabPages.Add($tabNet)
     }
 
+    # --- Upgrade tab (synthesis; always present - every machine can be assessed) ---
+    if ($null -ne $Report.Upgrade) {
+        $up = $Report.Upgrade
+        $tabUpgrade = New-Object System.Windows.Forms.TabPage
+        $tabUpgrade.Text = 'Upgrade'
+        $tabUpgrade.Padding = New-Object System.Windows.Forms.Padding(8, 8, 8, 8)
+        $uy = 10
+        if ($up.HasAny) {
+            foreach ($grp in @(
+                    @{ Name = 'Free fixes'; Key = 'Free' },
+                    @{ Name = 'Hardware upgrades'; Key = 'Hardware' })) {
+                $items = @($up.Recommendations | Where-Object { $_.Group -eq $grp.Key })
+                if ($items.Count -eq 0) { continue }
+                $hdr = New-Object System.Windows.Forms.Label
+                $hdr.Text = $grp.Name
+                $hdr.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+                $hdr.Location = New-Object System.Drawing.Point(10, $uy)
+                $hdr.AutoSize = $true
+                $tabUpgrade.Controls.Add($hdr)
+                $uy += 24
+                $body = New-Object System.Windows.Forms.Label
+                $body.Text = (@($items | ForEach-Object { "- $($_.Action) - $($_.Detail) ($($_.Impact))" }) -join "`r`n")
+                $body.Location = New-Object System.Drawing.Point(20, $uy)
+                $body.MaximumSize = New-Object System.Drawing.Size(560, 0)
+                $body.AutoSize = $true
+                $body.Anchor = 'Top,Left,Right'
+                $tabUpgrade.Controls.Add($body)
+                $uy += [Math]::Max($body.PreferredHeight, ($items.Count * 20)) + 14
+            }
+        } else {
+            $none = New-Object System.Windows.Forms.Label
+            $none.Text = 'No upgrades suggested - your system is well configured for its components.'
+            $none.Location = New-Object System.Drawing.Point(10, $uy)
+            $none.AutoSize = $true
+            $tabUpgrade.Controls.Add($none)
+            $uy += 28
+        }
+        $upCap = New-Object System.Windows.Forms.Label
+        $upCap.Text = 'Recommendations come only from measured facts. Impact is a coarse estimate (High / Med / Low), not a benchmark.'
+        $upCap.Location = New-Object System.Drawing.Point(10, ($uy + 6))
+        $upCap.MaximumSize = New-Object System.Drawing.Size(580, 0)
+        $upCap.AutoSize = $true
+        $upCap.ForeColor = [System.Drawing.Color]::Gray
+        $tabUpgrade.Controls.Add($upCap)
+        [void]$tabs.TabPages.Add($tabUpgrade)
+    }
+
     $form.Controls.Add($tabs)
 
     # --- Buttons (below tabs, always visible) ---

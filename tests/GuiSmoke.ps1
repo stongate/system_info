@@ -49,9 +49,9 @@ try {
     Check ($form.Text -eq 'System Info')            'window title'
     $tabControl = $form.Controls | Where-Object { $_ -is [System.Windows.Forms.TabControl] } | Select-Object -First 1
     Check ($null -ne $tabControl)            'has a TabControl'
-    Check ($tabControl.TabPages.Count -eq 9) 'nine tabs'
+    Check ($tabControl.TabPages.Count -eq 10) 'ten tabs'
     $tabNames = @($tabControl.TabPages | ForEach-Object { $_.Text })
-    Check (($tabNames -contains 'Overview') -and ($tabNames -contains 'CPU') -and ($tabNames -contains 'GPU') -and ($tabNames -contains 'Memory') -and ($tabNames -contains 'Storage') -and ($tabNames -contains 'Gaming') -and ($tabNames -contains 'Battery') -and ($tabNames -contains 'Live') -and ($tabNames -contains 'Network')) 'Overview/CPU/GPU/Memory/Storage/Gaming/Battery/Live/Network tabs'
+    Check (($tabNames -contains 'Overview') -and ($tabNames -contains 'CPU') -and ($tabNames -contains 'GPU') -and ($tabNames -contains 'Memory') -and ($tabNames -contains 'Storage') -and ($tabNames -contains 'Gaming') -and ($tabNames -contains 'Battery') -and ($tabNames -contains 'Live') -and ($tabNames -contains 'Network') -and ($tabNames -contains 'Upgrade')) 'Overview/CPU/GPU/Memory/Storage/Gaming/Battery/Live/Network/Upgrade tabs'
 
     $memTab2 = $tabControl.TabPages | Where-Object { $_.Text -eq 'Memory' } | Select-Object -First 1
     Check ([bool]((Get-AllText $memTab2) -join "`n" -match 'CPU-Z')) 'Memory tab has the MT/s footnote'
@@ -114,12 +114,20 @@ try {
     Check ([bool]($ovText -match 'Network:')) 'Overview has a Network line'
     Check ([bool]($ovText -match 'Gaming:'))  'Overview has a Gaming line'
 
+    $upgTab = $tabControl.TabPages | Where-Object { $_.Text -eq 'Upgrade' } | Select-Object -First 1
+    Check ($null -ne $upgTab) 'has Upgrade tab'
+    $upgText = (Get-AllText $upgTab) -join "`n"
+    Check ([bool]($upgText -match 'Free fixes'))        'Upgrade tab shows Free fixes group'
+    Check ([bool]($upgText -match 'Hardware upgrades'))  'Upgrade tab shows Hardware upgrades group'
+    Check ([bool]($upgText -match 'coarse estimate'))    'Upgrade tab shows the honesty caption'
+
     # No-battery / no-load / no-net case: no Battery/Live/Network tab; Overview says 'none (AC only)'.
     $form2 = New-SystemForm $reportNoBat
     $tc2 = $form2.Controls | Where-Object { $_ -is [System.Windows.Forms.TabControl] } | Select-Object -First 1
     $names2 = @($tc2.TabPages | ForEach-Object { $_.Text })
-    Check ($tc2.TabPages.Count -eq 6)          'desktop: six tabs (Gaming present; no Battery/Live/Network)'
+    Check ($tc2.TabPages.Count -eq 7)          'desktop: seven tabs (Gaming + Upgrade present; no Battery/Live/Network)'
     Check ($names2 -contains 'Gaming')         'desktop: Gaming tab present'
+    Check ($names2 -contains 'Upgrade')        'desktop: Upgrade tab present'
     Check (-not ($names2 -contains 'Battery')) 'desktop: no Battery tab'
     Check (-not ($names2 -contains 'Live'))    'no-load: no Live tab'
     Check (-not ($names2 -contains 'Network')) 'no-net: no Network tab'

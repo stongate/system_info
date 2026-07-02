@@ -1150,7 +1150,7 @@ function Get-FirmwareInsights {
 
 function Get-SystemInsights {
     # Orchestrator: per-subsystem notes plus cross-subsystem bottleneck notes.
-    param([object] $Cpu, [object] $Memory, [object] $Gpu = $null, [object] $Storage = $null, [object] $Battery = $null, [object] $Load = $null, [object] $Network = $null, [object] $GpuSensor = $null, [object] $Gaming = $null)
+    param([object] $Cpu, [object] $Memory, [object] $Gpu = $null, [object] $Storage = $null, [object] $Battery = $null, [object] $Load = $null, [object] $Network = $null, [object] $GpuSensor = $null, [object] $Gaming = $null, [object] $Firmware = $null)
     # Assign sub-results first (their ,@() returns unwrap to clean arrays), then
     # concatenate with +=. Wrapping the calls in @() here would nest each result
     # as a single sub-array element, merging multiple notes into one.
@@ -1195,6 +1195,10 @@ function Get-SystemInsights {
         $gamingNotes = Get-GamingInsights -Gaming $Gaming
         $notes += $gamingNotes
     }
+    if ($null -ne $Firmware) {
+        $firmwareNotes = Get-FirmwareInsights -Firmware $Firmware
+        $notes += $firmwareNotes
+    }
 
     # Cross note: many cores starved by single-channel memory bandwidth.
     if ($Memory.PopulatedSlots -eq 1 -and $Memory.TotalSlots -ge 2 -and $null -ne $Cpu.Cores -and [int]$Cpu.Cores -ge 6) {
@@ -1216,13 +1220,13 @@ function Get-SystemInsights {
 
 function New-SystemReport {
     # Compose the subsystem sections and run the insight engine.
-    param([object] $Cpu, [object] $Memory, [object] $Gpu = $null, [object] $Storage = $null, [object] $Battery = $null, [object] $Load = $null, [object] $Network = $null, [object] $GpuSensor = $null)
+    param([object] $Cpu, [object] $Memory, [object] $Gpu = $null, [object] $Storage = $null, [object] $Battery = $null, [object] $Load = $null, [object] $Network = $null, [object] $GpuSensor = $null, [object] $Firmware = $null)
     # Gaming is a synthesis of the sections above (computed here, not passed in).
     $gaming = if ($null -ne $Gpu) { New-GamingReport -Gpu $Gpu -Cpu $Cpu -Memory $Memory -Storage $Storage } else { $null }
     # Upgrade Advisor is a synthesis too (computed here; emits no notes, so it is
     # NOT passed to Get-SystemInsights).
     $upgrade = New-UpgradeReport -Cpu $Cpu -Memory $Memory -Gpu $Gpu -Storage $Storage -Battery $Battery
-    $insights = Get-SystemInsights -Cpu $Cpu -Memory $Memory -Gpu $Gpu -Storage $Storage -Battery $Battery -Load $Load -Network $Network -GpuSensor $GpuSensor -Gaming $gaming
+    $insights = Get-SystemInsights -Cpu $Cpu -Memory $Memory -Gpu $Gpu -Storage $Storage -Battery $Battery -Load $Load -Network $Network -GpuSensor $GpuSensor -Gaming $gaming -Firmware $Firmware
     [pscustomobject]@{
         Cpu       = $Cpu
         Memory    = $Memory
@@ -1233,6 +1237,7 @@ function New-SystemReport {
         Network   = $Network
         GpuSensor = $GpuSensor
         Gaming    = $gaming
+        Firmware  = $Firmware
         Upgrade   = $upgrade
         Insights  = $insights
     }

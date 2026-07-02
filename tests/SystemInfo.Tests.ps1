@@ -798,5 +798,14 @@ It 'fw healthy no note' { Assert-Equal 0 ((Get-FirmwareInsights -Firmware $fwWin
 It 'fw null no note'    { Assert-Equal 0 ((Get-FirmwareInsights -Firmware $null).Count) 'null none' }
 It 'fw notes all info'  { Assert-Equal 'info' ((@(Get-FirmwareInsights -Firmware $fwLegacy) | ForEach-Object { $_.Kind } | Sort-Object -Unique) -join ',') 'info kind' }
 
+Write-Host "`nSystem report (Firmware wiring)" -ForegroundColor Cyan
+$sysFw = Get-SystemInsights -Cpu $cpuDev -Memory $memDual -Gpu $gpu -Storage $st -Firmware $fwSbOff
+It 'fw wiring note'    { Assert-Equal $true  (HasNote $sysFw 'Secure Boot is supported but turned off') 'wired' }
+$sysNoFw = Get-SystemInsights -Cpu $cpuDev -Memory $memDual -Gpu $gpu -Storage $st -Firmware $null
+It 'fw wiring null ok' { Assert-Equal $false (HasNote $sysNoFw 'Secure Boot') 'null no note' }
+$repFw = New-SystemReport -Cpu $cpuDev -Memory $memDual -Gpu $gpu -Storage $st -Firmware $fwWin11
+It 'fw report section' { Assert-Equal 'UEFI' $repFw.Firmware.FirmwareType 'section' }
+It 'fw report no arg'  { Assert-Equal '' "$((New-SystemReport -Cpu $cpuDev -Memory $memDual).Firmware)" 'null default' }
+
 Write-Host "`n$script:Pass passed, $script:Fail failed`n"
 if ($script:Fail) { exit 1 } else { exit 0 }

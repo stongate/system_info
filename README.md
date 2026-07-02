@@ -12,6 +12,7 @@ Runs as a tabbed window or as plain console text. No dependencies, no installer 
 - **Memory** — installed amount and speed (rated vs. actually running), per-DIMM detail (size, maker, part #), slots used/free, and the motherboard's max capacity.
 - **Graphics** — every GPU, integrated vs. discrete, **accurate VRAM** (read from the registry, since Windows' usual field caps at ~4 GB), driver version/age, and active/idle status.
 - **Storage** — physical disks (NVMe SSD / SATA SSD / HDD, size, health, which is the boot drive) and volumes (drive letters, free space).
+- **Firmware & Security** — BIOS version/date, UEFI vs. Legacy, **Secure Boot** on/off, and **TPM** presence/version, rolled up into a **Windows 11 readiness** checklist. All read without admin (best-effort); the CPU-model requirement points you to Microsoft's supported-CPU list rather than guessing it.
 - **Notes / Bottlenecks** — e.g. *memory capped by the CPU*, *single-channel RAM limiting you*, *virtualization disabled in BIOS*, *discrete GPU idle*, *GPU driver N months old*, *Windows on a mechanical hard drive*, *drive low on space*.
 - **Upgrade Advisor** — turns the detected bottlenecks into a ranked *what-to-do-first* plan: free BIOS/driver/config fixes first (enable XMP, enable virtualization, update the GPU driver, free up disk space, switch off Power saver), then hardware upgrades (SSD, dual-channel RAM, replace a worn battery), each tagged with a coarse High/Med/Low impact. Pure synthesis of the data above — no invented prices, percentages, or product names.
 

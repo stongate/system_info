@@ -1127,6 +1127,27 @@ function Get-GamingInsights {
     return , @($notes)
 }
 
+function Get-FirmwareInsights {
+    # Firmware/security posture notes (all 'info' - configuration/posture, not a
+    # malfunction). Deliberately NO roll-up "not Win11-ready" note: the atomic
+    # notes below already carry the blockers, and a roll-up would duplicate them in
+    # the Notes box (the same don't-duplicate choice the Upgrade Advisor made). The
+    # readiness verdict is presentation (tab + console), not a note.
+    param([object] $Firmware)
+    $notes = @()
+    if ($null -eq $Firmware) { return , @($notes) }
+    if ($Firmware.SecureBoot -eq 'Off') {
+        $notes += [pscustomobject]@{ Kind = 'info'; Text = 'Secure Boot is supported but turned off; enabling it in firmware improves boot security (and is required for Windows 11).' }
+    }
+    if ($Firmware.FirmwareType -eq 'Legacy') {
+        $notes += [pscustomobject]@{ Kind = 'info'; Text = 'Firmware is in Legacy (CSM) mode; UEFI is required for Secure Boot and Windows 11.' }
+    }
+    if ($Firmware.Tpm -and $Firmware.Tpm.Present -eq $false) {
+        $notes += [pscustomobject]@{ Kind = 'info'; Text = 'No TPM detected. Windows 11 requires TPM 2.0; a firmware TPM (Intel PTT / AMD fTPM) may be disabled in BIOS.' }
+    }
+    return , @($notes)
+}
+
 function Get-SystemInsights {
     # Orchestrator: per-subsystem notes plus cross-subsystem bottleneck notes.
     param([object] $Cpu, [object] $Memory, [object] $Gpu = $null, [object] $Storage = $null, [object] $Battery = $null, [object] $Load = $null, [object] $Network = $null, [object] $GpuSensor = $null, [object] $Gaming = $null)

@@ -790,5 +790,13 @@ $fwNull = New-FirmwareReport -Raw $null
 It 'fw null type'         { Assert-Equal '' "$($fwNull.FirmwareType)" 'null type' }
 It 'fw null tpm absent'   { Assert-Equal $false $fwNull.Tpm.Present 'null tpm' }
 
+Write-Host "`nGet-FirmwareInsights" -ForegroundColor Cyan
+It 'fw note sb off'     { Assert-Equal $true (HasNote (Get-FirmwareInsights -Firmware $fwSbOff) 'Secure Boot is supported but turned off') 'sb off note' }
+It 'fw note legacy'     { Assert-Equal $true (HasNote (Get-FirmwareInsights -Firmware $fwLegacy) 'Legacy (CSM) mode') 'legacy note' }
+It 'fw note no tpm'     { Assert-Equal $true (HasNote (Get-FirmwareInsights -Firmware $fwLegacy) 'No TPM detected') 'no tpm note' }
+It 'fw healthy no note' { Assert-Equal 0 ((Get-FirmwareInsights -Firmware $fwWin11).Count) 'healthy none' }
+It 'fw null no note'    { Assert-Equal 0 ((Get-FirmwareInsights -Firmware $null).Count) 'null none' }
+It 'fw notes all info'  { Assert-Equal 'info' ((@(Get-FirmwareInsights -Firmware $fwLegacy) | ForEach-Object { $_.Kind } | Sort-Object -Unique) -join ',') 'info kind' }
+
 Write-Host "`n$script:Pass passed, $script:Fail failed`n"
 if ($script:Fail) { exit 1 } else { exit 0 }

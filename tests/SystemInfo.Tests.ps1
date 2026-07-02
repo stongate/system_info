@@ -740,5 +740,13 @@ $upNull = New-UpgradeReport -Cpu $cpuDev -Memory $memDual -Gpu $null -Storage $n
 It 'up null virt' { Assert-Equal $true  (UpHas $upNull 'virtualization') 'null sections -> virt rec only' }
 It 'up null ssd'  { Assert-Equal $false (UpHas $upNull 'SSD') 'no storage -> no ssd rec' }
 
+Write-Host "`nSystem report (Upgrade wiring)" -ForegroundColor Cyan
+$repUp = New-SystemReport -Cpu $cpuDev -Memory $memDual -Gpu $gpu -Storage $st -Battery $batDev
+It 'report has upgrade'   { Assert-Equal $true $repUp.Upgrade.HasAny 'upgrade section computed into report' }
+It 'report upgrade bat'   { Assert-Equal $true (UpHas $repUp.Upgrade 'Replace the worn battery') 'battery rec present in report' }
+# The advisor must NOT inject its Action text into the notes (no duplication).
+$repUpHdd = New-SystemReport -Cpu $cpuVirtOn -Memory $memDual -Storage $stHdd
+It 'upgrade no notes'     { Assert-Equal $false (HasNote $repUpHdd.Insights 'Move Windows to an SSD') 'advisor emits no notes' }
+
 Write-Host "`n$script:Pass passed, $script:Fail failed`n"
 if ($script:Fail) { exit 1 } else { exit 0 }

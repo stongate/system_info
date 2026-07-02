@@ -1119,6 +1119,9 @@ function New-SystemReport {
     param([object] $Cpu, [object] $Memory, [object] $Gpu = $null, [object] $Storage = $null, [object] $Battery = $null, [object] $Load = $null, [object] $Network = $null, [object] $GpuSensor = $null)
     # Gaming is a synthesis of the sections above (computed here, not passed in).
     $gaming = if ($null -ne $Gpu) { New-GamingReport -Gpu $Gpu -Cpu $Cpu -Memory $Memory -Storage $Storage } else { $null }
+    # Upgrade Advisor is a synthesis too (computed here; emits no notes, so it is
+    # NOT passed to Get-SystemInsights).
+    $upgrade = New-UpgradeReport -Cpu $Cpu -Memory $Memory -Gpu $Gpu -Storage $Storage -Battery $Battery
     $insights = Get-SystemInsights -Cpu $Cpu -Memory $Memory -Gpu $Gpu -Storage $Storage -Battery $Battery -Load $Load -Network $Network -GpuSensor $GpuSensor -Gaming $gaming
     [pscustomobject]@{
         Cpu       = $Cpu
@@ -1130,6 +1133,7 @@ function New-SystemReport {
         Network   = $Network
         GpuSensor = $GpuSensor
         Gaming    = $gaming
+        Upgrade   = $upgrade
         Insights  = $insights
     }
 }

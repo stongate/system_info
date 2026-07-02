@@ -665,5 +665,80 @@ It 'console gaming sect'    { Assert-Equal $true ([bool]($conGame -match 'Overal
 It 'console gaming verdict' { Assert-Equal $true ([bool]($conGame -match '1080p high')) 'verdict shown' }
 It 'console mem footnote'   { Assert-Equal $true ([bool]($conGame -match 'CPU-Z')) 'memory MT/s footnote' }
 
+# =====================================================================
+# Upgrade Advisor (slice I)
+# =====================================================================
+
+Write-Host "`nNew-UpgradeReport" -ForegroundColor Cyan
+function UpHas($up, $action) { [bool](@($up.Recommendations) | Where-Object { $_.Action -match [regex]::Escape($action) }) }
+function UpRec($up, $action) { @($up.Recommendations | Where-Object { $_.Action -match [regex]::Escape($action) })[0] }
+
+# One rule per fixture (isolated so only the rule under test fires).
+$upSsd = New-UpgradeReport -Cpu $cpuVirtOn -Memory $memDual -Storage $stHdd
+It 'up ssd action' { Assert-Equal $true (UpHas $upSsd 'Move Windows to an SSD') 'hdd -> ssd rec' }
+It 'up ssd group'  { Assert-Equal 'Hardware' (UpRec $upSsd 'Move Windows to an SSD').Group 'ssd group' }
+It 'up ssd impact' { Assert-Equal 'High' (UpRec $upSsd 'Move Windows to an SSD').Impact 'ssd impact' }
+
+$upDual = New-UpgradeReport -Cpu $cpuVirtOn -Memory $memSingle -Storage $st
+It 'up dual action' { Assert-Equal $true (UpHas $upDual 'Add a matched RAM module') 'single -> dual rec' }
+It 'up dual impact' { Assert-Equal 'High' (UpRec $upDual 'Add a matched RAM module').Impact 'dual impact' }
+
+$upVirt = New-UpgradeReport -Cpu $cpuDev -Memory $memDual -Storage $st
+It 'up virt action' { Assert-Equal $true (UpHas $upVirt 'Enable virtualization') 'virt off -> rec' }
+It 'up virt group'  { Assert-Equal 'Free' (UpRec $upVirt 'Enable virtualization').Group 'virt group' }
+
+$upSaver = New-UpgradeReport -Cpu $cpuVirtOn -Memory $memDual -Battery $batSaverName
+It 'up saver action' { Assert-Equal $true (UpHas $upSaver 'Power saver') 'saver -> rec' }
+It 'up saver group'  { Assert-Equal 'Free' (UpRec $upSaver 'Power saver').Group 'saver group' }
+
+$upSpace = New-UpgradeReport -Cpu $cpuVirtOn -Memory $memDual -Storage $stLow
+It 'up space action' { Assert-Equal $true (UpHas $upSpace 'Free up disk space') 'low space -> rec' }
+It 'up space impact' { Assert-Equal 'Med' (UpRec $upSpace 'Free up disk space').Impact 'space impact' }
+
+$upDrv = New-UpgradeReport -Cpu $cpuVirtOn -Memory $memDual -Gpu $gpu
+It 'up drv action' { Assert-Equal $true (UpHas $upDrv 'Update the GPU driver') 'old driver -> rec' }
+It 'up drv impact' { Assert-Equal 'Low' (UpRec $upDrv 'Update the GPU driver').Impact 'driver impact' }
+
+$upBat = New-UpgradeReport -Cpu $cpuVirtOn -Memory $memDual -Battery $batDev
+It 'up bat action' { Assert-Equal $true (UpHas $upBat 'Replace the worn battery') 'wear 45 -> rec' }
+It 'up bat group'  { Assert-Equal 'Hardware' (UpRec $upBat 'Replace the worn battery').Group 'battery group' }
+
+$upNvme = New-UpgradeReport -Cpu $cpuVirtOn -Memory $memDual -Storage $stSata
+It 'up nvme action' { Assert-Equal $true (UpHas $upNvme 'Consider an NVMe SSD') 'sata -> nvme rec' }
+It 'up nvme impact' { Assert-Equal 'Low' (UpRec $upNvme 'Consider an NVMe SSD').Impact 'nvme impact' }
+
+# XMP: running below what CPU (2933) and modules (3200) both support.
+$memXmp = New-MemoryReport -Modules @(
+    [pscustomobject]@{ Slot='A'; CapacityBytes=8589934592; RatedSpeed=3200; CurrentSpeed=2133; VendorRaw='x'; PartNumber='y'; TypeCode=26 }
+    [pscustomobject]@{ Slot='B'; CapacityBytes=8589934592; RatedSpeed=3200; CurrentSpeed=2133; VendorRaw='x'; PartNumber='y'; TypeCode=26 }
+) -MaxCapacityBytes 68719476736 -TotalSlots 2 -BoardMaker x -BoardModel y
+$upXmp = New-UpgradeReport -Cpu $cpuVirtOn -Memory $memXmp
+It 'up xmp action' { Assert-Equal $true (UpHas $upXmp 'Enable XMP') 'below supported -> xmp rec' }
+It 'up xmp impact' { Assert-Equal 'Med' (UpRec $upXmp 'Enable XMP').Impact 'xmp impact' }
+
+# Well-configured machine -> nothing fires.
+$gpuFresh = New-GpuReport -Gpus @([pscustomobject]@{ Name='NVIDIA GeForce RTX 4090'; Vendor='NVIDIA'; AdapterRamBytes=25769803776; RegistryVramBytes=$null; DriverVersion='x'; DriverDate=[datetime]'2026-05-01'; Availability=3; ResH=3840; ResV=2160; ResRefresh=144 }) -Now ([datetime]'2026-06-30')
+$stGood  = New-StorageReport -Disks @([pscustomobject]@{ Name='NVMe X'; MediaType='SSD'; BusType='NVMe'; SizeBytes=1000204886016; Health='Healthy'; IsBoot=$true }) -Volumes @([pscustomobject]@{ DriveLetter='C'; Label='OS'; FileSystem='NTFS'; SizeBytes=1000000000000; FreeBytes=500000000000 })
+$batGood = New-BatteryReport -ChargePercent 100 -IsOnAC $true -IsCharging $false -DesignCapacityMWh 100000 -FullChargeCapacityMWh 98000 -PowerPlan 'Balanced' -PowerPlanGuid '381b4222-f694-41f0-9685-ff5bb260df2e'
+$upGood = New-UpgradeReport -Cpu $cpuVirtOn -Memory $memDual -Gpu $gpuFresh -Storage $stGood -Battery $batGood
+It 'up good none'  { Assert-Equal $false $upGood.HasAny 'well-configured -> no recs' }
+It 'up good count' { Assert-Equal 0 (@($upGood.Recommendations).Count) 'zero recs' }
+
+# Ranking: Free before Hardware; High before Low within a group.
+$upRank = New-UpgradeReport -Cpu $cpuDev -Memory $memSingle -Gpu $gpu -Storage $stHdd -Battery $batDev
+It 'up rank first free'  { Assert-Equal 'Free' $upRank.Recommendations[0].Group 'free group ranked first' }
+It 'up rank first med'   { Assert-Equal 'Med'  $upRank.Recommendations[0].Impact 'med before low in free' }
+It 'up rank free count'  { Assert-Equal 2 $upRank.FreeCount 'two free (virt + driver)' }
+$upFirstHw = @($upRank.Recommendations | Where-Object { $_.Group -eq 'Hardware' })[0]
+It 'up rank hw high'     { Assert-Equal 'High' $upFirstHw.Impact 'hardware high ranked first' }
+It 'up rank hw ssd'      { Assert-Equal $true ([bool]($upFirstHw.Action -match 'SSD')) 'SSD first among hardware' }
+$upGrps = @($upRank.Recommendations | ForEach-Object { $_.Group })
+It 'up rank grouping'    { Assert-Equal $true ([array]::IndexOf($upGrps,'Hardware') -gt [array]::LastIndexOf($upGrps,'Free')) 'all free before all hardware' }
+
+# Null-safety: missing sections skip their rules, no error.
+$upNull = New-UpgradeReport -Cpu $cpuDev -Memory $memDual -Gpu $null -Storage $null -Battery $null
+It 'up null virt' { Assert-Equal $true  (UpHas $upNull 'virtualization') 'null sections -> virt rec only' }
+It 'up null ssd'  { Assert-Equal $false (UpHas $upNull 'SSD') 'no storage -> no ssd rec' }
+
 Write-Host "`n$script:Pass passed, $script:Fail failed`n"
 if ($script:Fail) { exit 1 } else { exit 0 }

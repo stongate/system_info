@@ -398,6 +398,98 @@ function New-GamingReport {
     }
 }
 
+function New-UpgradeReport {
+    # Synthesize a ranked upgrade action plan from the already-built subsystem
+    # sections (pure; no I/O). Free fixes first, then Hardware; High -> Med -> Low
+    # within each group, construction order breaking ties. Emits NO notes - this is
+    # presentation-only synthesis (it does not feed Get-SystemInsights). Each rule
+    # guards its own section, so missing sections simply skip their rules.
+    param([object] $Cpu, [object] $Memory, [object] $Gpu = $null, [object] $Storage = $null, [object] $Battery = $null)
+
+    $recs = @()
+
+    # ---- Free fixes ----
+    # XMP/EXPO: RAM running below what the CPU and the modules both support.
+    if ($null -ne $Memory) {
+        $run = if ($null -ne $Memory.RunningSpeed -and [int]$Memory.RunningSpeed -gt 0) { [int]$Memory.RunningSpeed } else { $null }
+        $rated = @($Memory.RatedSpeeds | Where-Object { $_ -gt 0 })
+        $ratedEff = if ($rated.Count -gt 0) { ($rated | Measure-Object -Minimum).Minimum } else { $null }
+        $cap = if ($null -ne $Cpu -and $null -ne $Cpu.MaxMemSpeed -and [int]$Cpu.MaxMemSpeed -gt 0) { [int]$Cpu.MaxMemSpeed } else { $null }
+        if ($null -ne $run -and $null -ne $ratedEff) {
+            $target = $null
+            if ($null -ne $cap) {
+                if ($run -lt $cap -and $run -lt $ratedEff) { $target = [math]::Min($cap, $ratedEff) }
+            } elseif ($run -lt $ratedEff) { $target = $ratedEff }
+            if ($null -ne $target) {
+                $recs += [pscustomobject]@{ Group = 'Free'; Action = 'Enable XMP/EXPO in BIOS'; Impact = 'Med'; Detail = "RAM runs at $run MT/s; the CPU and modules support up to $target - enabling XMP/EXPO could reach it." }
+            }
+        }
+    }
+    # Virtualization disabled in firmware.
+    if ($null -ne $Cpu -and $Cpu.VirtualizationEnabled -eq $false) {
+        $recs += [pscustomobject]@{ Group = 'Free'; Action = 'Enable virtualization (VT-x/AMD-V) in BIOS'; Impact = 'Med'; Detail = 'Virtualization appears disabled - needed for Hyper-V, WSL2, Docker or VMs (the firmware flag can be unreliable).' }
+    }
+    # Power saver plan active.
+    if ($null -ne $Battery) {
+        $guid = "$($Battery.PowerPlanGuid)".Trim()
+        $plan = "$($Battery.PowerPlan)".Trim()
+        if ($guid -eq 'a1841308-3541-4fab-bc81-f71556f20b4a' -or $plan -match 'saver') {
+            $recs += [pscustomobject]@{ Group = 'Free'; Action = 'Switch off the Power saver plan'; Impact = 'Med'; Detail = "Active plan '$plan' caps CPU speed to save energy - switch to Balanced for full performance." }
+        }
+    }
+    # Low free space (one rec per qualifying volume).
+    if ($null -ne $Storage) {
+        foreach ($v in $Storage.Volumes) {
+            if ($null -ne $v.FreePercent -and ([double]$v.FreePercent -lt 10 -or [double]$v.FreeGB -lt 25)) {
+                $recs += [pscustomobject]@{ Group = 'Free'; Action = "Free up disk space on $($v.DriveLetter):"; Impact = 'Med'; Detail = "$($v.DriveLetter): has $($v.FreeGB) GB free ($($v.FreePercent)%) - Windows slows when a drive is nearly full." }
+            }
+        }
+    }
+    # Old GPU driver (one rec per old GPU).
+    if ($null -ne $Gpu) {
+        foreach ($g in $Gpu.Gpus) {
+            if ($null -ne $g.DriverAgeMonths -and [int]$g.DriverAgeMonths -gt 12) {
+                $recs += [pscustomobject]@{ Group = 'Free'; Action = 'Update the GPU driver'; Impact = 'Low'; Detail = "$($g.Name) driver is ~$($g.DriverAgeMonths) months old." }
+            }
+        }
+    }
+
+    # ---- Hardware upgrades ----
+    $boot = if ($null -ne $Storage) { @($Storage.Disks | Where-Object { $_.IsBoot }) | Select-Object -First 1 } else { $null }
+    # HDD boot -> SSD.
+    if ($null -ne $boot -and $boot.Kind -eq 'HDD') {
+        $recs += [pscustomobject]@{ Group = 'Hardware'; Action = 'Move Windows to an SSD'; Impact = 'High'; Detail = "Boot drive $($boot.Name) is a mechanical HDD - the single biggest responsiveness upgrade." }
+    }
+    # Single-channel -> add a matched module.
+    if ($null -ne $Memory -and [int]$Memory.PopulatedSlots -eq 1 -and [int]$Memory.TotalSlots -ge 2) {
+        $recs += [pscustomobject]@{ Group = 'Hardware'; Action = 'Add a matched RAM module (dual-channel)'; Impact = 'High'; Detail = "Only 1 of $($Memory.TotalSlots) slots populated - a matched module enables dual-channel (up to ~2x memory bandwidth)." }
+    }
+    # Worn battery.
+    if ($null -ne $Battery -and $null -ne $Battery.WearPercent -and [int]$Battery.WearPercent -ge 35) {
+        $recs += [pscustomobject]@{ Group = 'Hardware'; Action = 'Replace the worn battery'; Impact = 'Med'; Detail = "Battery holds ~$($Battery.HealthPercent)% of design capacity ($($Battery.WearPercent)% lost)." }
+    }
+    # SATA SSD boot -> NVMe.
+    if ($null -ne $boot -and $boot.Kind -eq 'SATA SSD') {
+        $recs += [pscustomobject]@{ Group = 'Hardware'; Action = 'Consider an NVMe SSD'; Impact = 'Low'; Detail = 'Boot drive is a SATA SSD; an NVMe SSD is several times faster if you have an M.2 NVMe slot.' }
+    }
+
+    # ---- Rank: Free before Hardware; High -> Med -> Low; construction order ties.
+    # (Explicit Order tie-break: Sort-Object -Stable is unavailable in PS 5.1.)
+    $grpRank = @{ 'Free' = 0; 'Hardware' = 1 }
+    $impRank = @{ 'High' = 0; 'Med' = 1; 'Low' = 2 }
+    for ($k = 0; $k -lt $recs.Count; $k++) { $recs[$k] | Add-Member -NotePropertyName Order -NotePropertyValue $k -Force }
+    $ranked = @($recs |
+        Sort-Object @{ e = { $grpRank[[string]$_.Group] } }, @{ e = { $impRank[[string]$_.Impact] } }, @{ e = { $_.Order } } |
+        ForEach-Object { [pscustomobject]@{ Group = $_.Group; Action = $_.Action; Detail = $_.Detail; Impact = $_.Impact } })
+
+    [pscustomobject]@{
+        Recommendations = $ranked
+        FreeCount       = @($ranked | Where-Object { $_.Group -eq 'Free' }).Count
+        HardwareCount   = @($ranked | Where-Object { $_.Group -eq 'Hardware' }).Count
+        HasAny          = ($ranked.Count -gt 0)
+    }
+}
+
 function Get-DiskKind {
     # Classify a disk as NVMe SSD / SATA SSD / HDD / Unknown. Detects NVMe from
     # the name too, since Intel RST exposes NVMe drives with BusType 'RAID'.

@@ -1493,7 +1493,7 @@ function Get-FirmwareInfo {
     try { $bios = Get-CimInstance Win32_BIOS -ErrorAction Stop | Select-Object -First 1 } catch { }
 
     $sbKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot\State'
-    $isUefi = Test-Path $sbKey
+    $isUefi = try { Test-Path $sbKey -ErrorAction Stop } catch { $false }
     $sbEnabled = $null
     if ($isUefi) {
         try { $sbEnabled = [int](Get-ItemProperty -Path $sbKey -Name UEFISecureBootEnabled -ErrorAction Stop).UEFISecureBootEnabled } catch { }

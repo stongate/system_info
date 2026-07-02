@@ -1548,6 +1548,27 @@ function Write-SystemConsole {
         '  (tiering is approximate / generation-level)'
         ''
     }
+    if ($Report.Upgrade) {
+        $up = $Report.Upgrade
+        '  Upgrade Advisor'
+        '  ---------------'
+        if ($up.HasAny) {
+            $free = @($up.Recommendations | Where-Object { $_.Group -eq 'Free' })
+            $hw   = @($up.Recommendations | Where-Object { $_.Group -eq 'Hardware' })
+            if ($free.Count -gt 0) {
+                '  Free fixes'
+                foreach ($r in $free) { '    - {0} - {1} ({2})' -f $r.Action, $r.Detail, $r.Impact }
+            }
+            if ($hw.Count -gt 0) {
+                '  Hardware upgrades'
+                foreach ($r in $hw) { '    - {0} - {1} ({2})' -f $r.Action, $r.Detail, $r.Impact }
+            }
+        } else {
+            '  No upgrades suggested - your system is well configured for its components.'
+        }
+        '  (from measured facts; impact is a coarse estimate, not a benchmark)'
+        ''
+    }
     if (@($Report.Insights).Count -gt 0) {
         '  Notes'
         '  -----'

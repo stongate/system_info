@@ -748,5 +748,13 @@ It 'report upgrade bat'   { Assert-Equal $true (UpHas $repUp.Upgrade 'Replace th
 $repUpHdd = New-SystemReport -Cpu $cpuVirtOn -Memory $memDual -Storage $stHdd
 It 'upgrade no notes'     { Assert-Equal $false (HasNote $repUpHdd.Insights 'Move Windows to an SSD') 'advisor emits no notes' }
 
+Write-Host "`nWrite-SystemConsole (Upgrade Advisor)" -ForegroundColor Cyan
+$conUp = (Write-SystemConsole $repUp | Out-String)
+It 'console upgrade sect'  { Assert-Equal $true ([bool]($conUp -match 'Upgrade Advisor')) 'upgrade section present' }
+It 'console upgrade hw'    { Assert-Equal $true ([bool]($conUp -match 'Hardware upgrades')) 'hardware group present' }
+$repUpGood = New-SystemReport -Cpu $cpuVirtOn -Memory $memDual -Gpu $gpuFresh -Storage $stGood -Battery $batGood
+$conUpGood = (Write-SystemConsole $repUpGood | Out-String)
+It 'console upgrade empty' { Assert-Equal $true ([bool]($conUpGood -match 'No upgrades suggested')) 'empty-state line' }
+
 Write-Host "`n$script:Pass passed, $script:Fail failed`n"
 if ($script:Fail) { exit 1 } else { exit 0 }

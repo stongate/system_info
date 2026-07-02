@@ -28,7 +28,8 @@ $rawVols  = @([pscustomobject]@{ DriveLetter='C'; Label='OS'; FileSystem='NTFS';
 $st = New-StorageReport -Disks $rawDisks -Volumes $rawVols
 $bat = New-BatteryReport -ChargePercent 100 -IsOnAC $true -IsCharging $false -DesignCapacityMWh 95065 -FullChargeCapacityMWh 52166 -CycleCount 0 -Chemistry 'LiP' -Manufacturer 'SMP' -PowerPlan 'Balanced' -PowerPlanGuid '381b4222-f694-41f0-9685-ff5bb260df2e'
 $load = New-LoadReport -TotalPhysicalBytes 17179869184 -AvailableBytes 1000000000 -CommittedBytes (52000*1MB) -CommitLimitBytes (54512*1MB) -PercentCommitted 95 -PageReadsPerSec 3000
-$report = New-SystemReport -Cpu $cpu -Memory $mem -Gpu $gpu -Storage $st -Battery $bat -Load $load
+$net = New-NetworkReport -Adapters @([pscustomobject]@{ Name='Wi-Fi'; PhysicalMediaType='Native 802.11'; SpeedBps=324000000; Wlan=([pscustomobject]@{ State='connected'; Band='5 GHz'; RadioType='802.11ax'; SignalPercent=80; ReceiveMbps=360; TransmitMbps=324 }); MaxSupportedMbps=$null })
+$report = New-SystemReport -Cpu $cpu -Memory $mem -Gpu $gpu -Storage $st -Battery $bat -Load $load -Network $net
 $reportNoBat = New-SystemReport -Cpu $cpu -Memory $mem -Gpu $gpu -Storage $st
 
 # recursively collect all control text (labels, textboxes) under a control
@@ -47,9 +48,9 @@ try {
     Check ($form.Text -eq 'System Info')            'window title'
     $tabControl = $form.Controls | Where-Object { $_ -is [System.Windows.Forms.TabControl] } | Select-Object -First 1
     Check ($null -ne $tabControl)            'has a TabControl'
-    Check ($tabControl.TabPages.Count -eq 7) 'seven tabs'
+    Check ($tabControl.TabPages.Count -eq 8) 'eight tabs'
     $tabNames = @($tabControl.TabPages | ForEach-Object { $_.Text })
-    Check (($tabNames -contains 'Overview') -and ($tabNames -contains 'CPU') -and ($tabNames -contains 'GPU') -and ($tabNames -contains 'Memory') -and ($tabNames -contains 'Storage') -and ($tabNames -contains 'Battery') -and ($tabNames -contains 'Live')) 'Overview/CPU/GPU/Memory/Storage/Battery/Live tabs'
+    Check (($tabNames -contains 'Overview') -and ($tabNames -contains 'CPU') -and ($tabNames -contains 'GPU') -and ($tabNames -contains 'Memory') -and ($tabNames -contains 'Storage') -and ($tabNames -contains 'Battery') -and ($tabNames -contains 'Live') -and ($tabNames -contains 'Network')) 'Overview/CPU/GPU/Memory/Storage/Battery/Live/Network tabs'
 
     $memTab = $tabControl.TabPages | Where-Object { $_.Text -eq 'Memory' } | Select-Object -First 1
     $lv = $memTab.Controls | Where-Object { $_ -is [System.Windows.Forms.ListView] } | Select-Object -First 1
@@ -91,13 +92,23 @@ try {
     Check ([bool]($liveText -match 'Commit charge'))  'Live tab has KV labels'
     Check ([bool]($liveText -match 'Under pressure')) 'Live tab shows status'
 
-    # No-battery / no-load case: no Battery or Live tab; Overview says 'none (AC only)'.
+    $netTab = $tabControl.TabPages | Where-Object { $_.Text -eq 'Network' } | Select-Object -First 1
+    Check ($null -ne $netTab) 'has Network tab'
+    $netLv = $netTab.Controls | Where-Object { $_ -is [System.Windows.Forms.ListView] } | Select-Object -First 1
+    Check ($null -ne $netLv)         'Network tab has a ListView'
+    Check ($netLv.Items.Count -eq 1) 'one adapter row'
+    $netRow = @($netLv.Items[0].SubItems | ForEach-Object { $_.Text }) -join ' | '
+    Check ([bool]($netRow -match 'Wi-Fi 6'))  'Network row shows standard'
+    Check ([bool]($ovText -match 'Network:')) 'Overview has a Network line'
+
+    # No-battery / no-load / no-net case: no Battery/Live/Network tab; Overview says 'none (AC only)'.
     $form2 = New-SystemForm $reportNoBat
     $tc2 = $form2.Controls | Where-Object { $_ -is [System.Windows.Forms.TabControl] } | Select-Object -First 1
     $names2 = @($tc2.TabPages | ForEach-Object { $_.Text })
     Check ($tc2.TabPages.Count -eq 5)          'desktop: five tabs (no Battery/Live)'
     Check (-not ($names2 -contains 'Battery')) 'desktop: no Battery tab'
     Check (-not ($names2 -contains 'Live'))    'no-load: no Live tab'
+    Check (-not ($names2 -contains 'Network')) 'no-net: no Network tab'
     $ov2 = $tc2.TabPages | Where-Object { $_.Text -eq 'Overview' } | Select-Object -First 1
     $ov2Text = (Get-AllText $ov2) -join "`n"
     Check ([bool]($ov2Text -match 'none \(AC only\)')) 'desktop: Overview shows none (AC only)'

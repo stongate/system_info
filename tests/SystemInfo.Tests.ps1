@@ -448,5 +448,92 @@ It 'console load status' { Assert-Equal $true  ([bool]($conLoad -match 'Under pr
 $conNoLoad2 = (Write-SystemConsole $repNoLoad | Out-String)
 It 'console no load'     { Assert-Equal $false ([bool]($conNoLoad2 -match 'Commit charge')) 'no load -> no section' }
 
+# =====================================================================
+# Network — link + Wi-Fi health (slice F)
+# =====================================================================
+
+Write-Host "`nConvertFrom-NetshWlan" -ForegroundColor Cyan
+$wlanTxt = @'
+There is 1 interface on the system:
+
+    Name                   : Wi-Fi
+    State                  : connected
+    SSID                   : REDACTED
+    BSSID                  : 00:00:00:00:00:00
+    Radio type             : 802.11ax
+    Band                   : 5 GHz
+    Channel                : 157
+    Receive rate (Mbps)    : 360
+    Transmit rate (Mbps)   : 324
+    Signal                 : 80%
+'@
+$wl = ConvertFrom-NetshWlan -Text $wlanTxt
+It 'wlan band'   { Assert-Equal '5 GHz'    $wl.Band 'band' }
+It 'wlan radio'  { Assert-Equal '802.11ax' $wl.RadioType 'radio type' }
+It 'wlan signal' { Assert-Equal 80         $wl.SignalPercent 'signal %' }
+It 'wlan rx'     { Assert-Equal 360        $wl.ReceiveMbps 'rx rate' }
+It 'wlan tx'     { Assert-Equal 324        $wl.TransmitMbps 'tx rate' }
+It 'wlan state'  { Assert-Equal 'connected' $wl.State 'state' }
+It 'wlan empty'  { Assert-Equal $null (ConvertFrom-NetshWlan -Text '').Band 'empty -> null' }
+
+Write-Host "`nConvertTo-MaxLinkMbps" -ForegroundColor Cyan
+It 'maxlink gbe'   { Assert-Equal 1000  (ConvertTo-MaxLinkMbps -ValidValues @('Auto Negotiation','10 Mbps Half Duplex','100 Mbps Full Duplex','1.0 Gbps Full Duplex')) '1 GbE' }
+It 'maxlink 2.5g'  { Assert-Equal 2500  (ConvertTo-MaxLinkMbps -ValidValues @('100 Mbps Full Duplex','2.5 Gbps Full Duplex')) '2.5 GbE' }
+It 'maxlink 100'   { Assert-Equal 100   (ConvertTo-MaxLinkMbps -ValidValues @('10 Mbps Half Duplex','100 Mbps Full Duplex')) '100 Mbps' }
+It 'maxlink none'  { Assert-Equal $null (ConvertTo-MaxLinkMbps -ValidValues @('Auto Negotiation')) 'no speeds -> null' }
+It 'maxlink empty' { Assert-Equal $null (ConvertTo-MaxLinkMbps -ValidValues @()) 'empty -> null' }
+
+Write-Host "`nNew-NetworkReport" -ForegroundColor Cyan
+$rawAdapters = @(
+    [pscustomobject]@{ Name='Wi-Fi'; PhysicalMediaType='Native 802.11'; SpeedBps=324000000; Wlan=(ConvertFrom-NetshWlan -Text $wlanTxt); MaxSupportedMbps=$null }
+    [pscustomobject]@{ Name='Ethernet'; PhysicalMediaType='802.3'; SpeedBps=100000000; Wlan=$null; MaxSupportedMbps=1000 }
+)
+$net = New-NetworkReport -Adapters $rawAdapters
+$w0 = $net.Adapters[0]; $e0 = $net.Adapters[1]
+It 'net wifi type'   { Assert-Equal 'Wi-Fi' $w0.Type 'wifi type' }
+It 'net wifi link'   { Assert-Equal 324 $w0.LinkMbps 'wifi link mbps' }
+It 'net wifi signal' { Assert-Equal 80 $w0.SignalPercent 'wifi signal' }
+It 'net wifi band'   { Assert-Equal '5 GHz' $w0.Band 'wifi band' }
+It 'net wifi std'    { Assert-Equal 'Wi-Fi 6 (802.11ax)' $w0.Standard 'wifi standard friendly' }
+It 'net eth type'    { Assert-Equal 'Ethernet' $e0.Type 'eth type' }
+It 'net eth link'    { Assert-Equal 100 $e0.LinkMbps 'eth link' }
+It 'net eth max'     { Assert-Equal 1000 $e0.MaxSupportedMbps 'eth max supported' }
+
+Write-Host "`nGet-NetworkInsights" -ForegroundColor Cyan
+function NetAdp($type, $link, $sig, $band, $radio, $max) { [pscustomobject]@{ Name='X'; Type=$type; LinkMbps=$link; SignalPercent=$sig; Band=$band; RadioType=$radio; Standard=(ConvertTo-WifiStandard $radio); MaxSupportedMbps=$max } }
+function NetRep($adps) { [pscustomobject]@{ Adapters=@($adps) } }
+$niEth = Get-NetworkInsights -Network (NetRep @(NetAdp 'Ethernet' 100 $null $null $null 1000))
+It 'net eth below kind' { Assert-Equal 'warn' (@($niEth)[0].Kind) 'eth 100 vs 1000 -> warn' }
+It 'net eth below txt'  { Assert-Equal $true (HasNote $niEth 'but the adapter supports') 'eth below text' }
+$niEthOk = Get-NetworkInsights -Network (NetRep @(NetAdp 'Ethernet' 1000 $null $null $null 1000))
+It 'net eth ok'         { Assert-Equal 0 (@($niEthOk).Count) 'eth at max -> no note' }
+$ni24 = Get-NetworkInsights -Network (NetRep @(NetAdp 'Wi-Fi' 144 70 '2.4 GHz' '802.11n' $null))
+It 'net wifi 24'        { Assert-Equal $true (HasNote $ni24 '2.4 GHz') '2.4GHz -> info' }
+It 'net wifi old'       { Assert-Equal $true (HasNote $ni24 '802.11ac/ax') 'old standard -> info' }
+$niWeak = Get-NetworkInsights -Network (NetRep @(NetAdp 'Wi-Fi' 200 25 '5 GHz' '802.11ax' $null))
+It 'net wifi weak'      { Assert-Equal $true (HasNote $niWeak 'Weak Wi-Fi signal') 'weak signal -> info' }
+$niHealthy = Get-NetworkInsights -Network (NetRep @(NetAdp 'Wi-Fi' 324 80 '5 GHz' '802.11ax' $null))
+It 'net wifi healthy'   { Assert-Equal 0 (@($niHealthy).Count) 'healthy wifi -> no note' }
+
+Write-Host "`nSystem report (Network wiring)" -ForegroundColor Cyan
+$netEth = New-NetworkReport -Adapters @([pscustomobject]@{ Name='Ethernet'; PhysicalMediaType='802.3'; SpeedBps=100000000; Wlan=$null; MaxSupportedMbps=1000 })
+$sysNet = Get-SystemInsights -Cpu $cpuDev -Memory $memDual -Gpu $gpu -Storage $st -Network $netEth
+It 'sys has net note'  { Assert-Equal $true (HasNote $sysNet 'but the adapter supports') 'net note in sys insights' }
+$sysNoNet = Get-SystemInsights -Cpu $cpuDev -Memory $memDual -Gpu $gpu -Storage $st -Network $null
+It 'sys null net ok'    { Assert-Equal $false (HasNote $sysNoNet 'adapter supports') 'null net -> no note, no error' }
+$repNet = New-SystemReport -Cpu $cpuDev -Memory $memDual -Gpu $gpu -Storage $st -Network $netEth
+It 'report has net'     { Assert-Equal 'Ethernet' $repNet.Network.Adapters[0].Type 'net section in report' }
+It 'report net note'    { Assert-Equal $true (HasNote $repNet.Insights 'but the adapter supports') 'net note flows to report' }
+$repNoNet = New-SystemReport -Cpu $cpuDev -Memory $memDual -Gpu $gpu -Storage $st
+It 'report null net'    { Assert-Equal $null $repNoNet.Network 'no net -> null section' }
+
+Write-Host "`nWrite-SystemConsole (Network)" -ForegroundColor Cyan
+$repNetFull = New-SystemReport -Cpu $cpuDev -Memory $memDual -Gpu $gpu -Storage $st -Network $netEth
+$conNet = (Write-SystemConsole $repNetFull | Out-String)
+It 'console net sect' { Assert-Equal $true  ([bool]($conNet -match 'Network')) 'net section present' }
+It 'console net tbl'  { Assert-Equal $true  ([bool]($conNet -match 'Standard')) 'section table header (section-unique)' }
+$conNoNet2 = (Write-SystemConsole $repNoNet | Out-String)
+It 'console no net'   { Assert-Equal $false ([bool]($conNoNet2 -match 'Network')) 'no net -> no section' }
+
 Write-Host "`n$script:Pass passed, $script:Fail failed`n"
 if ($script:Fail) { exit 1 } else { exit 0 }

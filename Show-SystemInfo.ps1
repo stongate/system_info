@@ -500,6 +500,84 @@ function New-LoadReport {
     }
 }
 
+function ConvertFrom-NetshWlan {
+    # Pure parse of `netsh wlan show interfaces` text (first connected interface).
+    # English-label regex; missing labels -> $null (best-effort on other locales).
+    param([string] $Text)
+    $out = [pscustomobject]@{ State = $null; Band = $null; RadioType = $null; SignalPercent = $null; ReceiveMbps = $null; TransmitMbps = $null }
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $out }
+
+    function _m($text, $pat) {
+        $r = [regex]::Match($text, $pat)
+        if ($r.Success) { return $r.Groups[1].Value.Trim() }
+        return $null
+    }
+    function _num($text, $pat) {
+        $t = _m $text $pat
+        if ($null -ne $t) { return [int][math]::Round([double]$t) }
+        return $null
+    }
+    $out.State        = _m   $Text 'State\s*:\s*(.+)'
+    $out.Band         = _m   $Text 'Band\s*:\s*(.+)'
+    $out.RadioType    = _m   $Text 'Radio type\s*:\s*(.+)'
+    $out.SignalPercent = _num $Text 'Signal\s*:\s*(\d+)'
+    $out.ReceiveMbps  = _num $Text 'Receive rate \(Mbps\)\s*:\s*([\d.]+)'
+    $out.TransmitMbps = _num $Text 'Transmit rate \(Mbps\)\s*:\s*([\d.]+)'
+    return $out
+}
+
+function ConvertTo-MaxLinkMbps {
+    # Highest link speed (Mbps) from an Ethernet 'Speed & Duplex' valid-values
+    # list, e.g. '1.0 Gbps Full Duplex' -> 1000. $null if none parse.
+    param([string[]] $ValidValues = @())
+    $best = $null
+    foreach ($v in $ValidValues) {
+        $mbps = $null
+        $g = [regex]::Match($v, '([\d.]+)\s*Gbps')
+        $mb = [regex]::Match($v, '([\d.]+)\s*Mbps')
+        if ($g.Success) { $mbps = [int][math]::Round([double]$g.Groups[1].Value * 1000) }
+        elseif ($mb.Success) { $mbps = [int][math]::Round([double]$mb.Groups[1].Value) }
+        if ($null -ne $mbps -and ($null -eq $best -or $mbps -gt $best)) { $best = $mbps }
+    }
+    return $best
+}
+
+function ConvertTo-WifiStandard {
+    # Friendly Wi-Fi generation for a netsh radio type; unknown -> raw value.
+    param([string] $RadioType)
+    if ([string]::IsNullOrWhiteSpace($RadioType)) { return $null }
+    $r = $RadioType.Trim()
+    switch -Regex ($r) {
+        '802\.11be' { "Wi-Fi 7 ($r)"; break }
+        '802\.11ax' { "Wi-Fi 6 ($r)"; break }
+        '802\.11ac' { "Wi-Fi 5 ($r)"; break }
+        '802\.11n'  { "Wi-Fi 4 ($r)"; break }
+        default     { $r }
+    }
+}
+
+function New-NetworkReport {
+    # Build the Network section (pure) from raw adapter data (no cmdlets here).
+    param([object[]] $Adapters = @())
+    $list = @(foreach ($a in $Adapters) {
+        $pmt = "$($a.PhysicalMediaType)"
+        $type = if ($pmt -match '802\.11') { 'Wi-Fi' } elseif ($pmt -match '802\.3') { 'Ethernet' } else { 'Other' }
+        $link = if ($a.SpeedBps) { [int][math]::Round([double]$a.SpeedBps / 1e6) } else { $null }
+        $wlan = $a.Wlan
+        [pscustomobject]@{
+            Name             = "$($a.Name)".Trim()
+            Type             = $type
+            LinkMbps         = $link
+            SignalPercent    = if ($wlan) { $wlan.SignalPercent } else { $null }
+            Band             = if ($wlan) { $wlan.Band } else { $null }
+            RadioType        = if ($wlan) { $wlan.RadioType } else { $null }
+            Standard         = if ($wlan) { ConvertTo-WifiStandard $wlan.RadioType } else { $null }
+            MaxSupportedMbps = $a.MaxSupportedMbps
+        }
+    })
+    [pscustomobject]@{ Adapters = $list }
+}
+
 # =====================================================================
 # Insights / bottlenecks (pure)
 # =====================================================================
@@ -685,9 +763,35 @@ function Get-LoadInsights {
     return , @($notes)
 }
 
+function Get-NetworkInsights {
+    # Honest network notes: Ethernet linked below capability, and Wi-Fi band /
+    # signal / standard. No "Wi-Fi vs theoretical PHY max" (always cries wolf).
+    param([object] $Network)
+    $notes = @()
+    if ($null -eq $Network) { return , @($notes) }
+    foreach ($a in $Network.Adapters) {
+        if ($a.Type -eq 'Ethernet' -and $a.LinkMbps -and [int]$a.LinkMbps -gt 0 -and
+            $null -ne $a.MaxSupportedMbps -and [int]$a.LinkMbps -lt [int]$a.MaxSupportedMbps) {
+            $notes += [pscustomobject]@{ Kind = 'warn'; Text = "Ethernet is linked at $($a.LinkMbps) Mbps but the adapter supports $($a.MaxSupportedMbps) Mbps - usually a bad cable, a slow switch/port, or a duplex mismatch." }
+        }
+        if ($a.Type -eq 'Wi-Fi') {
+            if ("$($a.Band)" -match '2\.4') {
+                $notes += [pscustomobject]@{ Kind = 'info'; Text = "Wi-Fi is on the slower 2.4 GHz band; the 5 GHz (or 6 GHz) band is much faster when you're in range." }
+            }
+            if ($null -ne $a.SignalPercent -and [int]$a.SignalPercent -lt 40) {
+                $notes += [pscustomobject]@{ Kind = 'info'; Text = "Weak Wi-Fi signal ($($a.SignalPercent)%); the link rate drops with signal - move closer to the router or reduce interference." }
+            }
+            if ("$($a.RadioType)" -match '802\.11(a|b|g|n)$') {
+                $notes += [pscustomobject]@{ Kind = 'info'; Text = "Wi-Fi is $($a.RadioType); 802.11ac/ax is several times faster if your router supports it." }
+            }
+        }
+    }
+    return , @($notes)
+}
+
 function Get-SystemInsights {
     # Orchestrator: per-subsystem notes plus cross-subsystem bottleneck notes.
-    param([object] $Cpu, [object] $Memory, [object] $Gpu = $null, [object] $Storage = $null, [object] $Battery = $null, [object] $Load = $null)
+    param([object] $Cpu, [object] $Memory, [object] $Gpu = $null, [object] $Storage = $null, [object] $Battery = $null, [object] $Load = $null, [object] $Network = $null)
     # Assign sub-results first (their ,@() returns unwrap to clean arrays), then
     # concatenate with +=. Wrapping the calls in @() here would nest each result
     # as a single sub-array element, merging multiple notes into one.
@@ -720,6 +824,10 @@ function Get-SystemInsights {
         $loadNotes = Get-LoadInsights -Load $Load
         $notes += $loadNotes
     }
+    if ($null -ne $Network) {
+        $networkNotes = Get-NetworkInsights -Network $Network
+        $notes += $networkNotes
+    }
 
     # Cross note: many cores starved by single-channel memory bandwidth.
     if ($Memory.PopulatedSlots -eq 1 -and $Memory.TotalSlots -ge 2 -and $null -ne $Cpu.Cores -and [int]$Cpu.Cores -ge 6) {
@@ -741,8 +849,8 @@ function Get-SystemInsights {
 
 function New-SystemReport {
     # Compose the subsystem sections and run the insight engine.
-    param([object] $Cpu, [object] $Memory, [object] $Gpu = $null, [object] $Storage = $null, [object] $Battery = $null, [object] $Load = $null)
-    $insights = Get-SystemInsights -Cpu $Cpu -Memory $Memory -Gpu $Gpu -Storage $Storage -Battery $Battery -Load $Load
+    param([object] $Cpu, [object] $Memory, [object] $Gpu = $null, [object] $Storage = $null, [object] $Battery = $null, [object] $Load = $null, [object] $Network = $null)
+    $insights = Get-SystemInsights -Cpu $Cpu -Memory $Memory -Gpu $Gpu -Storage $Storage -Battery $Battery -Load $Load -Network $Network
     [pscustomobject]@{
         Cpu      = $Cpu
         Memory   = $Memory
@@ -750,6 +858,7 @@ function New-SystemReport {
         Storage  = $Storage
         Battery  = $Battery
         Load     = $Load
+        Network  = $Network
         Insights = $insights
     }
 }
@@ -950,6 +1059,34 @@ function Get-LoadInfo {
     }
 }
 
+function Get-NetworkInfo {
+    # Active adapters (link + Wi-Fi health), normalized for New-NetworkReport.
+    # Self-guarding; verified via the -Console run. Wi-Fi details come from netsh
+    # (best-effort / localized); Ethernet max from the Speed & Duplex advanced prop.
+    $adapters = @()
+    try {
+        $wlanText = $null
+        $ups = @(Get-NetAdapter -Physical -ErrorAction Stop | Where-Object { $_.Status -eq 'Up' })
+        foreach ($n in $ups) {
+            $pmt = "$($n.PhysicalMediaType)"
+            $wlan = $null; $maxMbps = $null
+            if ($pmt -match '802\.11') {
+                if ($null -eq $wlanText) { $wlanText = (netsh wlan show interfaces 2>$null | Out-String) }
+                $wlan = ConvertFrom-NetshWlan -Text $wlanText
+            } elseif ($pmt -match '802\.3') {
+                try {
+                    $sd = Get-NetAdapterAdvancedProperty -Name $n.Name -ErrorAction Stop | Where-Object { $_.DisplayName -match 'Speed.*Duplex' } | Select-Object -First 1
+                    if ($sd) { $maxMbps = ConvertTo-MaxLinkMbps -ValidValues @($sd.ValidDisplayValues) }
+                } catch { }
+            }
+            $adapters += [pscustomobject]@{
+                Name = $n.Name; PhysicalMediaType = $pmt; SpeedBps = $n.Speed; Wlan = $wlan; MaxSupportedMbps = $maxMbps
+            }
+        }
+    } catch { }
+    [pscustomobject]@{ Adapters = $adapters }
+}
+
 # =====================================================================
 # Renderers
 # =====================================================================
@@ -1071,6 +1208,19 @@ function Write-SystemConsole {
         '  (live values, as of when this ran)'
         ''
     }
+    if ($Report.Network -and @($Report.Network.Adapters).Count -gt 0) {
+        '  Network'
+        '  -------'
+        ($Report.Network.Adapters |
+            Format-Table -AutoSize @{n='Adapter';e={$_.Name}},
+                                    @{n='Type';e={$_.Type}},
+                                    @{n='Link';e={ if ($null -ne $_.LinkMbps) { "$($_.LinkMbps) Mbps" } else { '?' } }},
+                                    @{n='Signal';e={ if ($null -ne $_.SignalPercent) { "$($_.SignalPercent)%" } else { '' } }},
+                                    @{n='Band';e={ $_.Band }},
+                                    @{n='Standard';e={ $_.Standard }} |
+            Out-String).TrimEnd()
+        ''
+    }
     if (@($Report.Insights).Count -gt 0) {
         '  Notes'
         '  -----'
@@ -1135,7 +1285,7 @@ function New-SystemForm {
 
     $ovTop = New-Object System.Windows.Forms.Panel
     $ovTop.Dock = 'Top'
-    $ovTop.Height = 154
+    $ovTop.Height = 174
     $cpuLine = "$($cpu.Name)  -  $($cpu.Cores)C / $($cpu.Threads)T" + $(if ($cpu.Codename) { ", $($cpu.Codename)" } else { '' })
     $memLine = "$($mem.TotalInstalledGB) GB $($mem.TypeName)  -  $($mem.PopulatedSlots)/$($mem.TotalSlots) slots, max $maxCap"
     $gpuParts = @()
@@ -1153,7 +1303,16 @@ function New-SystemForm {
         if ($b.PowerPlan) { $segs += $b.PowerPlan }
         ($segs -join '  -  ')
     } else { 'none (AC only)' }
-    $oy = Add-KvBlock -Parent $ovTop -Keys @('Processor:', 'Graphics:', 'Memory:', 'Storage:', 'Battery:') -Values @($cpuLine, $gpuLine, $memLine, $storageLine, $batteryLine) -X 4 -Y 6 -KeyW 90 -ValW 460
+    $networkLine = if ($null -ne $Report.Network -and @($Report.Network.Adapters).Count -gt 0) {
+        $primary = @($Report.Network.Adapters | Where-Object { $_.LinkMbps }) | Select-Object -First 1
+        if (-not $primary) { $primary = $Report.Network.Adapters[0] }
+        $det = @()
+        if ($primary.Band) { $det += $primary.Band }
+        if ($primary.Standard) { $det += $primary.Standard }
+        if ($null -ne $primary.SignalPercent) { $det += "$($primary.SignalPercent)%" }
+        "$($primary.Type)  -  $($primary.LinkMbps) Mbps" + $(if ($det.Count) { " ($($det -join ', '))" } else { '' })
+    } else { 'No active connection' }
+    $oy = Add-KvBlock -Parent $ovTop -Keys @('Processor:', 'Graphics:', 'Memory:', 'Storage:', 'Battery:', 'Network:') -Values @($cpuLine, $gpuLine, $memLine, $storageLine, $batteryLine, $networkLine) -X 4 -Y 6 -KeyW 90 -ValW 460
     $notesHeader = New-Object System.Windows.Forms.Label
     $notesHeader.Text = 'Notes / Bottlenecks:'
     $notesHeader.Location = New-Object System.Drawing.Point(4, ($oy + 2))
@@ -1377,6 +1536,34 @@ function New-SystemForm {
         [void]$tabs.TabPages.Add($tabLive)
     }
 
+    # --- Network tab (only when at least one adapter is up) ---
+    if ($null -ne $Report.Network -and @($Report.Network.Adapters).Count -gt 0) {
+        $tabNet = New-Object System.Windows.Forms.TabPage
+        $tabNet.Text = 'Network'
+        $tabNet.Padding = New-Object System.Windows.Forms.Padding(8, 8, 8, 8)
+        $netList = New-Object System.Windows.Forms.ListView
+        $netList.View = 'Details'; $netList.FullRowSelect = $true; $netList.GridLines = $true; $netList.Dock = 'Fill'
+        [void]$netList.Columns.Add('Adapter', 150)
+        [void]$netList.Columns.Add('Type', 80)
+        [void]$netList.Columns.Add('Link', 90)
+        [void]$netList.Columns.Add('Signal', 60)
+        [void]$netList.Columns.Add('Band', 70)
+        [void]$netList.Columns.Add('Standard', 150)
+        foreach ($a in $Report.Network.Adapters) {
+            $item = New-Object System.Windows.Forms.ListViewItem([string]$a.Name)
+            [void]$item.SubItems.Add([string]$a.Type)
+            [void]$item.SubItems.Add($(if ($null -ne $a.LinkMbps) { "$($a.LinkMbps) Mbps" } else { '?' }))
+            [void]$item.SubItems.Add($(if ($null -ne $a.SignalPercent) { "$($a.SignalPercent)%" } else { '' }))
+            [void]$item.SubItems.Add([string]$a.Band)
+            [void]$item.SubItems.Add([string]$a.Standard)
+            [void]$netList.Items.Add($item)
+        }
+        $tabNet.Controls.Add($netList)
+        $nFill = { $o = 0; for ($i = 1; $i -lt $netList.Columns.Count; $i++) { $o += $netList.Columns[$i].Width }; $f = $netList.ClientSize.Width - $o; if ($f -gt 120) { $netList.Columns[0].Width = $f } }.GetNewClosure()
+        $netList.Add_Resize($nFill); & $nFill
+        [void]$tabs.TabPages.Add($tabNet)
+    }
+
     $form.Controls.Add($tabs)
 
     # --- Buttons (below tabs, always visible) ---
@@ -1427,6 +1614,7 @@ function Invoke-SystemInfo {
         $stRaw   = Get-StorageInfo
         $batRaw  = Get-BatteryInfo
         $loadRaw = Get-LoadInfo
+        $netRaw  = Get-NetworkInfo
     } catch {
         $err = "Couldn't read system info from Windows (CIM/WMI): $($_.Exception.Message)"
         if ($Console) { Write-Output $err; return }
@@ -1468,8 +1656,9 @@ function Invoke-SystemInfo {
                        -CommittedBytes $loadRaw.CommittedBytes -CommitLimitBytes $loadRaw.CommitLimitBytes `
                        -PercentCommitted $loadRaw.PercentCommitted -PageReadsPerSec $loadRaw.PageReadsPerSec
     } else { $null }
+    $network = New-NetworkReport -Adapters $netRaw.Adapters
 
-    $report = New-SystemReport -Cpu $cpu -Memory $memory -Gpu $gpu -Storage $storage -Battery $battery -Load $load
+    $report = New-SystemReport -Cpu $cpu -Memory $memory -Gpu $gpu -Storage $storage -Battery $battery -Load $load -Network $network
 
     if ($Console) { Write-SystemConsole $report; return }
 

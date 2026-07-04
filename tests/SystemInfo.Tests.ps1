@@ -681,6 +681,9 @@ It 'game core 8c off' { Assert-Equal $false (HasNote (Get-GamingInsights -Gaming
 
 $gm30 = New-GamingReport -Gpu (New-GpuReport -Gpus @([pscustomobject]@{ Name='NVIDIA GeForce RTX 2060'; Vendor='NVIDIA'; AdapterRamBytes=6442450944; RegistryVramBytes=$null; DriverVersion='x'; DriverDate=$null; Availability=3; ResH=3840; ResV=2160; ResRefresh=30 }) -Now ([datetime]'2026-07-01')) -Cpu $cpuDev -Memory $memDual -Storage $gStorage
 It 'gaming 30 wording' { Assert-Equal $true ($gm30.Limiters -contains '30 Hz display') 'sub-59 keeps measured number' }
+$gm0 = New-GamingReport -Gpu $gmDeskGpu -Cpu (New-CpuReport -Name 'bad read' -Cores 0 -Threads 0 -AddressWidth 64 -MemoryType 'DDR4') -Memory $memDual -Storage $gStorage
+It 'gaming 0core lim'  { Assert-Equal $false ([bool](($gm0.Limiters -join ',') -match 'core CPU')) 'cores=0 bad read stays silent' }
+It 'game core 0c off'  { Assert-Equal $false (HasNote (Get-GamingInsights -Gaming $gm0) 'want 6+ CPU cores') 'cores=0 note silent' }
 
 Write-Host "`nGet-GamingInsights" -ForegroundColor Cyan
 $giVram = Get-GamingInsights -Gaming $gm
@@ -703,6 +706,11 @@ $conGame = (Write-SystemConsole $repGame | Out-String)
 It 'console gaming sect'    { Assert-Equal $true ([bool]($conGame -match 'Overall')) 'gaming section present (Overall label)' }
 It 'console gaming verdict' { Assert-Equal $true ([bool]($conGame -match '1080p mainstream')) 'adjusted verdict shown' }
 It 'console mem footnote'   { Assert-Equal $true ([bool]($conGame -match 'CPU-Z')) 'memory MT/s footnote' }
+It 'console gaming laptop' { Assert-Equal $true ([bool]($conGame -match '\(laptop GPU\)')) 'laptop qualifier on Overall' }
+It 'console gaming storage' { Assert-Equal $true ([bool]($conGame -match 'NVMe SSD boot drive')) 'Storage line rendered' }
+It 'console gaming caption' { Assert-Equal $true ([bool]($conGame -match 'one rank below')) 'laptop tier rule in caption' }
+$repGameNoSt = New-SystemReport -Cpu $cpuDev -Memory $memDual -Gpu $gGpu
+It 'console gaming st unk'  { Assert-Equal $true ([bool]((Write-SystemConsole $repGameNoSt | Out-String) -match 'Storage\s+: Unknown')) 'Storage Unknown fallback' }
 
 # =====================================================================
 # Upgrade Advisor (slice I)

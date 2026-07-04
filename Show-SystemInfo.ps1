@@ -1712,16 +1712,19 @@ function Write-SystemConsole {
         $gm = $Report.Gaming
         $lim = if (@($gm.Limiters).Count -gt 0) { ($gm.Limiters -join ', ') } else { 'none - well balanced' }
         $dispStr = if ($null -ne $gm.RefreshHz) { "$($gm.DisplayW)x$($gm.DisplayH) @ $($gm.RefreshHz) Hz" } else { 'Unknown' }
+        $overall = $gm.Verdict + $(if ($gm.MobileVariant -and $null -ne $gm.Rank) { ' (laptop GPU)' } else { '' })
         '  Gaming'
         '  ------'
-        '  Overall          : {0}' -f $gm.Verdict
+        '  Overall          : {0}' -f $overall
         '  Limited by       : {0}' -f $lim
         '  GPU              : {0}' -f $(if ($gm.GpuName) { $gm.GpuName } else { 'Unknown' })
         '  VRAM             : {0}' -f $(if ($null -ne $gm.VramGB) { "$($gm.VramGB) GB" } else { 'Unknown' })
         '  CPU              : {0}' -f $(if ($null -ne $gm.Cores) { "$($gm.Cores) cores" } else { 'Unknown' })
         '  Memory           : {0}' -f $(if ($null -ne $gm.RamGB) { "$($gm.RamGB) GB $(if ($gm.DualChannel) { 'dual-channel' } else { 'single-channel' })" } else { 'Unknown' })
         '  Display          : {0}' -f $dispStr
-        '  (tiering is approximate / generation-level)'
+        '  Storage          : {0}' -f $(if ($gm.BootKind) { "$($gm.BootKind) boot drive" } else { 'Unknown' })
+        '  (tiering is approximate / generation-level; laptop GPU variants'
+        '   - "Max-Q", "Laptop" - are tiered one rank below the desktop card of the same name)'
         ''
     }
     if ($Report.Firmware) {

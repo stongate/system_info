@@ -599,7 +599,8 @@ Write-Host "`nGet-GpuGamingTier" -ForegroundColor Cyan
 function Tier($n) { (Get-GpuGamingTier -Name $n).Rank }
 It 'tier 5090'    { Assert-Equal 5 (Tier 'NVIDIA GeForce RTX 5090') 'rtx 5090' }
 It 'tier 5070ti'  { Assert-Equal 4 (Tier 'NVIDIA GeForce RTX 5070 Ti') 'rtx 5070 ti' }
-It 'tier 2060'    { Assert-Equal 3 (Tier 'NVIDIA GeForce RTX 2060 with Max-Q Design') 'rtx 2060' }
+It 'tier 2060 desktop' { Assert-Equal 3 (Tier 'NVIDIA GeForce RTX 2060') 'desktop rtx 2060 unchanged' }
+It 'tier 2060 maxq'    { Assert-Equal 2 (Tier 'NVIDIA GeForce RTX 2060 with Max-Q Design') 'max-q tiers one below desktop' }
 It 'tier 5060'    { Assert-Equal 3 (Tier 'NVIDIA GeForce RTX 5060') 'rtx 5060 (not the 5090 rank)' }
 It 'tier 1650'    { Assert-Equal 2 (Tier 'NVIDIA GeForce GTX 1650') 'gtx 1650' }
 It 'tier 9070xt'  { Assert-Equal 5 (Tier 'AMD Radeon RX 9070 XT') 'rx 9070 xt' }
@@ -610,6 +611,14 @@ It 'tier irisxe'  { Assert-Equal 1 (Tier 'Intel(R) Iris(R) Xe Graphics') 'iris x
 It 'tier uhd'     { Assert-Equal 1 (Tier 'Intel(R) UHD Graphics') 'intel uhd' }
 It 'tier unknown' { Assert-Equal $null (Tier 'Frobozz 9000') 'unknown -> null' }
 It 'tier label'   { Assert-Equal $true ([bool]((Get-GpuGamingTier -Name 'NVIDIA GeForce RTX 2060').Label -match '1080p')) 'label present' }
+It 'tier 4090 laptop' { Assert-Equal 4 (Tier 'NVIDIA GeForce RTX 4090 Laptop GPU') '4090 laptop = desktop 4070 Ti class' }
+It 'tier 3080 laptop' { Assert-Equal 3 (Tier 'NVIDIA GeForce RTX 3080 Laptop GPU') '3080 laptop' }
+It 'tier 6800m'       { Assert-Equal 3 (Tier 'AMD Radeon RX 6800M') 'amd M suffix' }
+It 'tier 4050'        { Assert-Equal 2 (Tier 'NVIDIA GeForce RTX 4050 Laptop GPU') 'laptop-native 4050 exempt from -1' }
+It 'tier 1650ti maxq' { Assert-Equal 1 (Tier 'NVIDIA GeForce GTX 1650 Ti with Max-Q Design') 'floor holds at 1' }
+It 'tier maxq flag'   { Assert-Equal $true  ((Get-GpuGamingTier -Name 'NVIDIA GeForce RTX 2060 with Max-Q Design').MobileVariant) 'mobile flag set' }
+It 'tier desk flag'   { Assert-Equal $false ((Get-GpuGamingTier -Name 'NVIDIA GeForce RTX 2060').MobileVariant) 'desktop not mobile' }
+It 'tier rank1 label' { Assert-Equal 'esports / light 1080p' ((Get-GpuGamingTier -Name 'Intel(R) UHD Graphics').Label) 'rank-1 label drops integrated-class' }
 
 Write-Host "`nNew-GpuReport (display fields)" -ForegroundColor Cyan
 $gpuDisp = New-GpuReport -Gpus @([pscustomobject]@{ Name='Intel UHD'; Vendor='Intel'; AdapterRamBytes=1073741824; RegistryVramBytes=$null; DriverVersion='x'; DriverDate=$null; Availability=3; ResH=1920; ResV=1200; ResRefresh=60 }) -Now ([datetime]'2026-07-01')
@@ -627,8 +636,8 @@ $gGpu = New-GpuReport -Gpus @(
 $gStorage = New-StorageReport -Disks @([pscustomobject]@{ Name='NVMe X'; MediaType='SSD'; BusType='NVMe'; SizeBytes=512000000000; Health='Healthy'; IsBoot=$true }) -Volumes @()
 $gm = New-GamingReport -Gpu $gGpu -Cpu $cpuDev -Memory $memDual -Storage $gStorage
 It 'gaming gpu'      { Assert-Equal 'NVIDIA GeForce RTX 2060 with Max-Q Design' $gm.GpuName 'picks the discrete GPU' }
-It 'gaming rank'     { Assert-Equal 3 $gm.Rank 'rank 3' }
-It 'gaming verdict'  { Assert-Equal $true ([bool]($gm.Verdict -match '1080p high')) 'verdict label' }
+It 'gaming rank'     { Assert-Equal 2 $gm.Rank 'max-q adjusted rank 2' }
+It 'gaming verdict'  { Assert-Equal $true ([bool]($gm.Verdict -match '1080p mainstream')) 'adjusted verdict label' }
 It 'gaming refresh'  { Assert-Equal 60 $gm.RefreshHz 'display refresh from the UHD adapter' }
 It 'gaming vram lim' { Assert-Equal $true ([bool](($gm.Limiters -join ',') -match 'VRAM')) '6 GB VRAM limiter' }
 It 'gaming hz lim'   { Assert-Equal $true ([bool](($gm.Limiters -join ',') -match 'Hz')) '60 Hz limiter' }
@@ -644,11 +653,16 @@ $igGm = New-GamingReport -Gpu $igGpu -Cpu $cpuDev -Memory $memDual -Storage $gSt
 It 'gaming ig disc'  { Assert-Equal $false $igGm.IsDiscrete 'integrated only' }
 It 'gaming ig lim'   { Assert-Equal $true ([bool](($igGm.Limiters -join ',') -match 'no discrete')) 'no-discrete limiter' }
 
+$gmDeskGpu = New-GpuReport -Gpus @([pscustomobject]@{ Name='NVIDIA GeForce RTX 2060'; Vendor='NVIDIA'; AdapterRamBytes=6442450944; RegistryVramBytes=$null; DriverVersion='x'; DriverDate=$null; Availability=3; ResH=1920; ResV=1080; ResRefresh=60 }) -Now ([datetime]'2026-07-01')
+$gmDesk = New-GamingReport -Gpu $gmDeskGpu -Cpu $cpuDev -Memory $memDual -Storage $gStorage
+It 'gaming desk rank' { Assert-Equal 3 $gmDesk.Rank 'desktop 2060 stays rank 3' }
+
 Write-Host "`nGet-GamingInsights" -ForegroundColor Cyan
 $giVram = Get-GamingInsights -Gaming $gm
 It 'game vram info'  { Assert-Equal $true (HasNote $giVram 'VRAM') 'low VRAM note' }
 It 'game vram kind'  { Assert-Equal 'info' (@($giVram | Where-Object { $_.Text -match 'VRAM' })[0].Kind) 'vram info kind' }
-It 'game 60hz info'  { Assert-Equal $true (HasNote $giVram 'caps what you see') '60 Hz note' }
+It 'game 60hz gated' { Assert-Equal $false (HasNote $giVram 'caps what you see') '60 Hz note gated off at rank 2' }
+It 'game 60hz info'  { Assert-Equal $true (HasNote (Get-GamingInsights -Gaming $gmDesk) 'caps what you see') '60 Hz note fires at rank 3' }
 $giHi = Get-GamingInsights -Gaming $hiGm
 It 'game hi none'    { Assert-Equal 0 (@($giHi).Count) 'high-end -> no notes' }
 $giIg = Get-GamingInsights -Gaming $igGm
@@ -656,13 +670,13 @@ It 'game ig warn'    { Assert-Equal 'warn' (@($giIg | Where-Object { $_.Text -ma
 
 Write-Host "`nSystem report (Gaming wiring)" -ForegroundColor Cyan
 $repGame = New-SystemReport -Cpu $cpuDev -Memory $memDual -Gpu $gGpu -Storage $gStorage
-It 'report has gaming'  { Assert-Equal 3 $repGame.Gaming.Rank 'gaming section computed into report' }
+It 'report has gaming'  { Assert-Equal 2 $repGame.Gaming.Rank 'gaming section computed into report (max-q adjusted)' }
 It 'report gaming note' { Assert-Equal $true (HasNote $repGame.Insights 'VRAM') 'gaming note flows to report' }
 
 Write-Host "`nWrite-SystemConsole (Gaming + memory footnote)" -ForegroundColor Cyan
 $conGame = (Write-SystemConsole $repGame | Out-String)
 It 'console gaming sect'    { Assert-Equal $true ([bool]($conGame -match 'Overall')) 'gaming section present (Overall label)' }
-It 'console gaming verdict' { Assert-Equal $true ([bool]($conGame -match '1080p high')) 'verdict shown' }
+It 'console gaming verdict' { Assert-Equal $true ([bool]($conGame -match '1080p mainstream')) 'adjusted verdict shown' }
 It 'console mem footnote'   { Assert-Equal $true ([bool]($conGame -match 'CPU-Z')) 'memory MT/s footnote' }
 
 # =====================================================================

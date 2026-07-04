@@ -310,11 +310,21 @@ function New-GpuReport {
 function Get-GpuGamingTier {
     # Coarse, best-effort gaming tier for a GPU name (generation-level; refreshed
     # from 2026 GPU hierarchies). Ordered highest-rank-first; first match wins.
-    # Returns { Rank (5..1 or $null); Label }. The precise value is the limiters,
-    # not this bucket.
+    # Name-declared laptop variants ("Max-Q", "Laptop GPU", AMD's trailing M) are
+    # tiered one rank below the desktop card of the same name (floor 1); rules
+    # flagged exempt already describe laptop-native or bottom-tier parts. Returns
+    # { Rank (5..1 or $null); Label; MobileVariant }. The precise value is the
+    # limiters, not this bucket.
     param([string] $Name)
-    $out = [pscustomobject]@{ Rank = $null; Label = 'Unrecognized' }
+    $out = [pscustomobject]@{ Rank = $null; Label = 'Unrecognized'; MobileVariant = $false }
     if ([string]::IsNullOrWhiteSpace($Name)) { return $out }
+    # Name-declared mobile variant? (word-bounded: "Mobility" does not match)
+    $mobile = ($Name -match 'Max-?Q|\bLaptop\b|\bMobile\b') -or ($Name -match 'RX\s*\d{3,4}M\b')
+    $out.MobileVariant = $mobile
+    # Normalize to the base SKU so the desktop row matches.
+    $base = $Name -replace 'with\s+Max-?Q\s+Design', '' -replace 'Max-?Q', '' `
+                  -replace 'Laptop\s+GPU', '' -replace '\bLaptop\b', '' -replace '\bMobile\b', ''
+    $base = $base -replace '(RX\s*\d{3,4})M\b', '$1'
     $rules = @(
         @{ r = 'RTX\s*(5090|5080|4090|4080)\b'; k = 5 }
         @{ r = 'RX\s*(9070\s*XT|7900\s*XTX)'; k = 5 }
@@ -323,25 +333,28 @@ function Get-GpuGamingTier {
         @{ r = 'RTX\s*(5060|4060|3070|3060|2080|2070|2060)\b'; k = 3 }
         @{ r = 'RX\s*(9060|7700|7600|6750|6700|6650|6600)\b'; k = 3 }
         @{ r = 'Arc\s*(B580|A770|A750)\b'; k = 3 }
+        @{ r = 'RTX\s*4050\b'; k = 2; exempt = $true }   # laptop-only SKU; rank already reflects it
         @{ r = 'RTX\s*(5050|3050)\b'; k = 2 }
         @{ r = 'GTX\s*(1660|1650|1080|1070|1060)\b'; k = 2 }
         @{ r = 'RX\s*(5700|5600|590|580)\b'; k = 2 }
         @{ r = 'Arc\s*(B570|A580|A380)\b'; k = 2 }
-        @{ r = 'GTX\s*(1050|1030)\b|\bMX\d'; k = 1 }
+        @{ r = 'GTX\s*(1050|1030)\b|\bMX\d'; k = 1; exempt = $true }
         @{ r = 'RX\s*(570|560|550)\b|Vega'; k = 1 }
-        @{ r = 'Iris|UHD|HD\s*Graphics|Radeon.*Graphics'; k = 1 }
+        @{ r = 'Iris|UHD|HD\s*Graphics|Radeon.*Graphics'; k = 1; exempt = $true }
     )
     $labels = @{
         5 = '4K ultra / max settings'
         4 = '1440p ultra / entry 4K'
         3 = '1080p high / 1440p mainstream'
         2 = '1080p mainstream / esports'
-        1 = 'esports / light 1080p (integrated-class)'
+        1 = 'esports / light 1080p'
     }
     foreach ($rule in $rules) {
-        if ($Name -match $rule.r) {
-            $out.Rank = $rule.k
-            $out.Label = $labels[$rule.k]
+        if ($base -match $rule.r) {
+            $k = $rule.k
+            if ($mobile -and -not $rule.exempt) { $k = [Math]::Max(1, $k - 1) }
+            $out.Rank = $k
+            $out.Label = $labels[$k]
             return $out
         }
     }
@@ -358,7 +371,7 @@ function New-GamingReport {
     if (-not $gamingGpu) { $gamingGpu = $gpus | Select-Object -First 1 }
     $display = @($gpus | Where-Object { $null -ne $_.RefreshHz }) | Select-Object -First 1
 
-    $tier       = if ($gamingGpu) { Get-GpuGamingTier -Name $gamingGpu.Name } else { [pscustomobject]@{ Rank = $null; Label = 'Unrecognized' } }
+    $tier       = if ($gamingGpu) { Get-GpuGamingTier -Name $gamingGpu.Name } else { [pscustomobject]@{ Rank = $null; Label = 'Unrecognized'; MobileVariant = $false } }
     $vram       = if ($gamingGpu) { $gamingGpu.VramGB } else { $null }
     $isDiscrete = if ($gamingGpu) { [bool]$gamingGpu.IsDiscrete } else { $false }
     $cores      = if ($Cpu) { $Cpu.Cores } else { $null }

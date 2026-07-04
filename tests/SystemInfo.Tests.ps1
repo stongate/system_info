@@ -672,6 +672,16 @@ It 'gaming mv pass'    { Assert-Equal $true  $gm.MobileVariant 'max-q flag on re
 It 'gaming mv desk'    { Assert-Equal $false $gmDesk.MobileVariant 'desktop flag off' }
 It 'gaming verdict plain' { Assert-Equal '1080p mainstream / esports' $gm.Verdict 'Verdict carries no qualifier (renderers append it)' }
 
+$gi4 = Get-GamingInsights -Gaming $gm4
+It 'game core note'   { Assert-Equal $true (HasNote $gi4 'want 6+ CPU cores') 'low-core note fires at rank 3' }
+It 'game core kind'   { Assert-Equal 'info' (@($gi4 | Where-Object { $_.Text -match 'CPU cores' })[0].Kind) 'low-core note is info' }
+$gm4Lo = New-GamingReport -Gpu $gGpu -Cpu $cpu4 -Memory $memDual -Storage $gStorage
+It 'game core gated'  { Assert-Equal $false (HasNote (Get-GamingInsights -Gaming $gm4Lo) 'want 6+ CPU cores') 'gated off at rank 2' }
+It 'game core 8c off' { Assert-Equal $false (HasNote (Get-GamingInsights -Gaming $gmDesk) 'want 6+ CPU cores') '8 cores silent' }
+
+$gm30 = New-GamingReport -Gpu (New-GpuReport -Gpus @([pscustomobject]@{ Name='NVIDIA GeForce RTX 2060'; Vendor='NVIDIA'; AdapterRamBytes=6442450944; RegistryVramBytes=$null; DriverVersion='x'; DriverDate=$null; Availability=3; ResH=3840; ResV=2160; ResRefresh=30 }) -Now ([datetime]'2026-07-01')) -Cpu $cpuDev -Memory $memDual -Storage $gStorage
+It 'gaming 30 wording' { Assert-Equal $true ($gm30.Limiters -contains '30 Hz display') 'sub-59 keeps measured number' }
+
 Write-Host "`nGet-GamingInsights" -ForegroundColor Cyan
 $giVram = Get-GamingInsights -Gaming $gm
 It 'game vram info'  { Assert-Equal $true (HasNote $giVram 'VRAM') 'low VRAM note' }

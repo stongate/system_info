@@ -388,7 +388,7 @@ function New-GamingReport {
     $limiters = @()
     if (-not $isDiscrete) { $limiters += 'no discrete GPU' }
     elseif ($null -ne $vram -and [double]$vram -lt 8) { $limiters += "$vram GB VRAM" }
-    if ($null -ne $cores -and [int]$cores -le 4) { $limiters += "$cores-core CPU" }
+    if ($null -ne $cores -and [int]$cores -ge 1 -and [int]$cores -le 4) { $limiters += "$cores-core CPU" }
     if ($null -ne $ramGB -and [double]$ramGB -lt 16) { $limiters += "$ramGB GB RAM" }
     if (-not $dual) { $limiters += 'single-channel RAM' }
     if ($null -ne $refresh -and [int]$refresh -le 60) {
@@ -1141,6 +1141,9 @@ function Get-GamingInsights {
     }
     if ($null -ne $Gaming.RefreshHz -and [int]$Gaming.RefreshHz -le 60 -and $null -ne $Gaming.Rank -and [int]$Gaming.Rank -ge 3) {
         $notes += [pscustomobject]@{ Kind = 'info'; Text = "Your GPU can likely push past 60 fps, but the $($Gaming.RefreshHz) Hz display caps what you see - a high-refresh panel would show more." }
+    }
+    if ($null -ne $Gaming.Cores -and [int]$Gaming.Cores -ge 1 -and [int]$Gaming.Cores -le 4 -and $null -ne $Gaming.Rank -and [int]$Gaming.Rank -ge 3) {
+        $notes += [pscustomobject]@{ Kind = 'info'; Text = "Modern AAA games increasingly want 6+ CPU cores; a $($Gaming.Cores)-core CPU may cap frame rates even where the GPU has headroom." }
     }
     return , @($notes)
 }

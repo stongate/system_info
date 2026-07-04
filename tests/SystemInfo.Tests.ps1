@@ -619,6 +619,8 @@ It 'tier 1650ti maxq' { Assert-Equal 1 (Tier 'NVIDIA GeForce GTX 1650 Ti with Ma
 It 'tier maxq flag'   { Assert-Equal $true  ((Get-GpuGamingTier -Name 'NVIDIA GeForce RTX 2060 with Max-Q Design').MobileVariant) 'mobile flag set' }
 It 'tier desk flag'   { Assert-Equal $false ((Get-GpuGamingTier -Name 'NVIDIA GeForce RTX 2060').MobileVariant) 'desktop not mobile' }
 It 'tier rank1 label' { Assert-Equal 'esports / light 1080p' ((Get-GpuGamingTier -Name 'Intel(R) UHD Graphics').Label) 'rank-1 label drops integrated-class' }
+It 'tier 560m floor'  { Assert-Equal 1 (Tier 'AMD Radeon RX 560M') 'k=1 non-exempt mobile clamps at 1' }
+It 'tier 1660ti mob'  { Assert-Equal 1 (Tier 'GeForce GTX 1660 Ti Mobile') 'Mobile marker detected + stripped' }
 
 Write-Host "`nNew-GpuReport (display fields)" -ForegroundColor Cyan
 $gpuDisp = New-GpuReport -Gpus @([pscustomobject]@{ Name='Intel UHD'; Vendor='Intel'; AdapterRamBytes=1073741824; RegistryVramBytes=$null; DriverVersion='x'; DriverDate=$null; Availability=3; ResH=1920; ResV=1200; ResRefresh=60 }) -Now ([datetime]'2026-07-01')
@@ -656,6 +658,19 @@ It 'gaming ig lim'   { Assert-Equal $true ([bool](($igGm.Limiters -join ',') -ma
 $gmDeskGpu = New-GpuReport -Gpus @([pscustomobject]@{ Name='NVIDIA GeForce RTX 2060'; Vendor='NVIDIA'; AdapterRamBytes=6442450944; RegistryVramBytes=$null; DriverVersion='x'; DriverDate=$null; Availability=3; ResH=1920; ResV=1080; ResRefresh=60 }) -Now ([datetime]'2026-07-01')
 $gmDesk = New-GamingReport -Gpu $gmDeskGpu -Cpu $cpuDev -Memory $memDual -Storage $gStorage
 It 'gaming desk rank' { Assert-Equal 3 $gmDesk.Rank 'desktop 2060 stays rank 3' }
+$cpu4 = New-CpuReport -Name 'Intel(R) Core(TM) i5-7400 CPU @ 3.00GHz' -Cores 4 -Threads 4 -AddressWidth 64 -MemoryType 'DDR4'
+$cpu6 = New-CpuReport -Name 'Intel(R) Core(TM) i5-9400F CPU @ 2.90GHz' -Cores 6 -Threads 6 -AddressWidth 64 -MemoryType 'DDR4'
+$gm4 = New-GamingReport -Gpu $gmDeskGpu -Cpu $cpu4 -Memory $memDual -Storage $gStorage
+It 'gaming 4core lim'  { Assert-Equal $true  ($gm4.Limiters -contains '4-core CPU') '4-core limiter fires' }
+$gm6 = New-GamingReport -Gpu $gmDeskGpu -Cpu $cpu6 -Memory $memDual -Storage $gStorage
+It 'gaming 6core none' { Assert-Equal $false ([bool](($gm6.Limiters -join ',') -match 'core CPU')) '6 cores clean (boundary)' }
+$g59Gpu = New-GpuReport -Gpus @([pscustomobject]@{ Name='NVIDIA GeForce RTX 2060'; Vendor='NVIDIA'; AdapterRamBytes=6442450944; RegistryVramBytes=$null; DriverVersion='x'; DriverDate=$null; Availability=3; ResH=1920; ResV=1200; ResRefresh=59 }) -Now ([datetime]'2026-07-01')
+$gm59 = New-GamingReport -Gpu $g59Gpu -Cpu $cpuDev -Memory $memDual -Storage $gStorage
+It 'gaming 59 wording' { Assert-Equal $true ($gm59.Limiters -contains '60 Hz-class display') '59 reported -> 60 Hz-class' }
+It 'gaming 60 wording' { Assert-Equal $true ($gmDesk.Limiters -contains '60 Hz-class display') '60 measured -> 60 Hz-class' }
+It 'gaming mv pass'    { Assert-Equal $true  $gm.MobileVariant 'max-q flag on report' }
+It 'gaming mv desk'    { Assert-Equal $false $gmDesk.MobileVariant 'desktop flag off' }
+It 'gaming verdict plain' { Assert-Equal '1080p mainstream / esports' $gm.Verdict 'Verdict carries no qualifier (renderers append it)' }
 
 Write-Host "`nGet-GamingInsights" -ForegroundColor Cyan
 $giVram = Get-GamingInsights -Gaming $gm

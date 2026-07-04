@@ -388,15 +388,20 @@ function New-GamingReport {
     $limiters = @()
     if (-not $isDiscrete) { $limiters += 'no discrete GPU' }
     elseif ($null -ne $vram -and [double]$vram -lt 8) { $limiters += "$vram GB VRAM" }
+    if ($null -ne $cores -and [int]$cores -le 4) { $limiters += "$cores-core CPU" }
     if ($null -ne $ramGB -and [double]$ramGB -lt 16) { $limiters += "$ramGB GB RAM" }
     if (-not $dual) { $limiters += 'single-channel RAM' }
-    if ($null -ne $refresh -and [int]$refresh -le 60) { $limiters += "$refresh Hz display" }
+    if ($null -ne $refresh -and [int]$refresh -le 60) {
+        # 59 is Windows' rounding of a 59.94 Hz mode - "60 Hz-class" is the honest read.
+        $limiters += $(if ([int]$refresh -eq 59 -or [int]$refresh -eq 60) { '60 Hz-class display' } else { "$refresh Hz display" })
+    }
     if ($bootKind -eq 'HDD') { $limiters += 'HDD boot drive' }
 
     [pscustomobject]@{
         GpuName     = if ($gamingGpu) { $gamingGpu.Name } else { $null }
         Rank        = $tier.Rank
         TierLabel   = $tier.Label
+        MobileVariant = [bool]$tier.MobileVariant
         Verdict     = $verdict
         VramGB      = $vram
         IsDiscrete  = $isDiscrete

@@ -2088,19 +2088,21 @@ function New-SystemForm {
         $tabGame.Text = 'Gaming'
         $lim = if (@($gm.Limiters).Count -gt 0) { ($gm.Limiters -join ', ') } else { 'none - well balanced' }
         $disp = if ($null -ne $gm.RefreshHz) { "$($gm.DisplayW)x$($gm.DisplayH) @ $($gm.RefreshHz) Hz" } else { 'Unknown' }
-        $gKeys = @('Overall:', 'Limited by:', 'GPU:', 'VRAM:', 'CPU:', 'Memory:', 'Display:')
+        $gOverall = $gm.Verdict + $(if ($gm.MobileVariant -and $null -ne $gm.Rank) { ' (laptop GPU)' } else { '' })
+        $gKeys = @('Overall:', 'Limited by:', 'GPU:', 'VRAM:', 'CPU:', 'Memory:', 'Display:', 'Storage:')
         $gVals = @(
-            $gm.Verdict
+            $gOverall
             $lim
             $(if ($gm.GpuName) { $gm.GpuName } else { 'Unknown' })
             $(if ($null -ne $gm.VramGB) { "$($gm.VramGB) GB" } else { 'Unknown' })
             $(if ($null -ne $gm.Cores) { "$($gm.Cores) cores" } else { 'Unknown' })
             $(if ($null -ne $gm.RamGB) { "$($gm.RamGB) GB $(if ($gm.DualChannel) { 'dual-channel' } else { 'single-channel' })" } else { 'Unknown' })
             $disp
+            $(if ($gm.BootKind) { "$($gm.BootKind) boot drive" } else { 'Unknown' })
         )
         $gy = Add-KvBlock -Parent $tabGame -Keys $gKeys -Values $gVals -KeyW 110 -ValW 440
         $gCap = New-Object System.Windows.Forms.Label
-        $gCap.Text = 'Gaming tiering is approximate / generation-level, not a benchmark.'
+        $gCap.Text = "Gaming tiering is approximate / generation-level, not a benchmark.`r`nLaptop GPU variants (`"Max-Q`", `"Laptop`") are tiered one rank below the desktop card of the same name."
         $gCap.Location = New-Object System.Drawing.Point(14, ($gy + 6))
         $gCap.AutoSize = $true
         $gCap.ForeColor = [System.Drawing.Color]::Gray

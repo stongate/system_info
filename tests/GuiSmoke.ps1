@@ -60,7 +60,11 @@ try {
     Check ($null -ne $gameTab) 'has Gaming tab'
     $gameText = (Get-AllText $gameTab) -join "`n"
     Check ([bool]($gameText -match 'Overall'))   'Gaming tab shows overall verdict'
-    Check ([bool]($gameText -match '1080p high')) 'Gaming tab shows the tier'
+    Check ([bool]($gameText -match '1080p mainstream'))    'Gaming tab shows the (laptop-adjusted) tier'
+    Check ([bool]($gameText -match '\(laptop GPU\)'))      'Gaming tab shows the laptop-variant qualifier'
+    Check ([bool]($gameText -match 'Storage:'))            'Gaming tab has a Storage line'
+    Check ([bool]($gameText -match 'NVMe SSD boot drive')) 'Gaming tab shows the boot drive kind'
+    Check ([bool]($gameText -match 'one rank below'))      'Gaming tab caption states the laptop tier rule'
 
     $memTab = $tabControl.TabPages | Where-Object { $_.Text -eq 'Memory' } | Select-Object -First 1
     $lv = $memTab.Controls | Where-Object { $_ -is [System.Windows.Forms.ListView] } | Select-Object -First 1

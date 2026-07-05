@@ -1708,6 +1708,39 @@ function Write-SystemConsole {
         '  (live values, as of when this ran)'
         ''
     }
+    if ($Report.Benchmark) {
+        $bmr = $Report.Benchmark
+        $cparts = @()
+        if ($null -ne $bmr.Cpu.StMops) { $cparts += '{0:N0} arith Mops/s single-thread' -f $bmr.Cpu.StMops }
+        if ($null -ne $bmr.Cpu.MtMops) { $cparts += '{0:N0} all-threads ({1}x on {2} threads)' -f $bmr.Cpu.MtMops, $bmr.Cpu.Scale, $bmr.Cpu.Threads }
+        $cpuStr = if ($cparts.Count) { $cparts -join ' -> ' } else { 'Unavailable' }
+        $mparts = @()
+        if ($null -ne $bmr.Memory.StGBps) { $mparts += '{0:N1} GB/s copy (1 thread)' -f $bmr.Memory.StGBps }
+        if ($null -ne $bmr.Memory.MtGBps) { $mparts += '{0:N1} GB/s (all threads)' -f $bmr.Memory.MtGBps }
+        $memStr = if ($mparts.Count) {
+            ($mparts -join ' / ') + $(if ($null -ne $bmr.Memory.TheoreticalGBps) { '; theoretical peak ~{0:N1} GB/s ({1})' -f $bmr.Memory.TheoreticalGBps, $bmr.Memory.ChannelAssumption } else { '' })
+        } elseif ($bmr.Memory.SkippedReason) { "Unavailable ($($bmr.Memory.SkippedReason))" } else { 'Unavailable' }
+        $dparts = @()
+        if ($null -ne $bmr.Disk.SeqMBps) { $dparts += '{0:N0} MB/s sequential' -f $bmr.Disk.SeqMBps }
+        if ($null -ne $bmr.Disk.RandIops) { $dparts += '{0:N0} IOPS random 4K (~{1:N1} MB/s)' -f $bmr.Disk.RandIops, $bmr.Disk.RandMBps }
+        $diskStr = if ($dparts.Count) {
+            $(if ($bmr.Disk.Drive) { "$($bmr.Disk.Drive) " } else { '' }) + ($dparts -join ' / ')
+        } elseif ($bmr.Disk.SkippedReason) { "Unavailable ($($bmr.Disk.SkippedReason))" } else { 'Unavailable' }
+        $ctxParts = @()
+        if ($bmr.Context.OnAC -eq $true) { $ctxParts += 'on AC power' } elseif ($bmr.Context.OnAC -eq $false) { $ctxParts += 'on battery' }
+        if ($bmr.Context.PowerPlan) { $ctxParts += "$($bmr.Context.PowerPlan) plan" }
+        $ctxParts += '{0:yyyy-MM-dd HH:mm}' -f $bmr.Context.RanAt
+        '  Benchmarks'
+        '  ----------'
+        '  CPU              : {0}' -f $cpuStr
+        '  Memory           : {0}' -f $memStr
+        '  Disk             : {0}' -f $diskStr
+        '  Context          : {0} (short-burst)' -f ($ctxParts -join ', ')
+        '  (measured by this tool''s own workloads - comparable across runs of this'
+        '   tool, not to other benchmarks; disk is single-stream/QD1 - spec-sheet'
+        '   numbers need deep queues)'
+        ''
+    }
     if ($Report.Network -and @($Report.Network.Adapters).Count -gt 0) {
         '  Network'
         '  -------'

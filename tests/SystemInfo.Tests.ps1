@@ -919,5 +919,27 @@ $repBenchPh = New-SystemReport -Cpu $cpuDev -Memory $memDual
 It 'bench placeholder' { Assert-Equal $true ($repBenchPh.PSObject.Properties.Name -contains 'Benchmark') 'report has Benchmark property' }
 It 'bench ph null'     { Assert-Equal $null $repBenchPh.Benchmark 'placeholder starts null' }
 
+$bmEmptyPlan = New-BenchmarkReport -Raw $benchRawFull -Memory $memDual -Battery (New-BatteryReport -ChargePercent 50 -IsOnAC $true -IsCharging $false -DesignCapacityMWh 1 -FullChargeCapacityMWh 1 -CycleCount 0 -Chemistry 'x' -Manufacturer 'y' -PowerPlan '' -PowerPlanGuid 'z') -RanAt ([datetime]'2026-07-05 10:00')
+It 'bench empty plan'  { Assert-Equal $null $bmEmptyPlan.Context.PowerPlan 'empty PowerPlan string -> null' }
+$bmNoMt = New-BenchmarkReport -Raw ([pscustomobject]@{ CpuStMops = 1014; CpuMtMops = $null; ThreadCount = 16; MemStGBps = $null; MemMtGBps = $null; MemSkippedReason = $null; DiskSeqMBps = $null; DiskRandIops = $null; DiskSkippedReason = $null; DiskDrive = $null; ElapsedS = 2.0 }) -Memory $memDual -Battery $null -RanAt ([datetime]'2026-07-05 10:00')
+It 'bench scale null'  { Assert-Equal $null $bmNoMt.Cpu.Scale 'MT missing -> null scale, no crash' }
+
+Write-Host "`nWrite-SystemConsole (Benchmarks)" -ForegroundColor Cyan
+$repBench = New-SystemReport -Cpu $cpuDev -Memory $memDual
+$repBench.Benchmark = $bm
+$conBench = (Write-SystemConsole $repBench | Out-String)
+It 'bench console sect'  { Assert-Equal $true ([bool]($conBench -match 'Benchmarks')) 'Benchmarks section present' }
+It 'bench console cpu'   { Assert-Equal $true ([bool]($conBench -match 'arith Mops/s single-thread')) 'cpu line' }
+It 'bench console theo'  { Assert-Equal $true ([bool]($conBench -match 'theoretical peak ~46.9 GB/s')) 'memory theoretical' }
+It 'bench console disk'  { Assert-Equal $true ([bool]($conBench -match 'IOPS random 4K')) 'disk line' }
+It 'bench console ctx'   { Assert-Equal $true ([bool]($conBench -match 'on AC power, Balanced plan, 2026-07-05 10:00')) 'context line' }
+It 'bench console qd1'   { Assert-Equal $true ([bool]($conBench -match 'single-stream/QD1')) 'honesty caption' }
+$repBenchSkip = New-SystemReport -Cpu $cpuDev -Memory $memDual
+$repBenchSkip.Benchmark = $bmSkips
+$conBenchSkip = (Write-SystemConsole $repBenchSkip | Out-String)
+It 'bench console skip'  { Assert-Equal $true ([bool]($conBenchSkip -match 'Unavailable \(low available memory')) 'skip reason rendered' }
+$conNoBench = (Write-SystemConsole (New-SystemReport -Cpu $cpuDev -Memory $memDual) | Out-String)
+It 'bench console absent' { Assert-Equal $false ([bool]($conNoBench -match 'Benchmarks')) 'no run -> no section' }
+
 Write-Host "`n$script:Pass passed, $script:Fail failed`n"
 if ($script:Fail) { exit 1 } else { exit 0 }

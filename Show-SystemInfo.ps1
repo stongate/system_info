@@ -2100,8 +2100,8 @@ function Add-BenchmarkResults {
 }
 
 function New-SystemForm {
-    # Tabbed WinForms window (Overview / CPU / Memory). Returns the form without
-    # showing it, so it can be smoke-tested headlessly.
+    # Tabbed WinForms window (12 tabs, Overview through Upgrade). Returns the form
+    # without showing it, so it can be smoke-tested headlessly.
     param($Report)
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing

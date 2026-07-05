@@ -940,6 +940,9 @@ $conBenchSkip = (Write-SystemConsole $repBenchSkip | Out-String)
 It 'bench console skip'  { Assert-Equal $true ([bool]($conBenchSkip -match 'Unavailable \(low available memory')) 'skip reason rendered' }
 $conNoBench = (Write-SystemConsole (New-SystemReport -Cpu $cpuDev -Memory $memDual) | Out-String)
 It 'bench console absent' { Assert-Equal $false ([bool]($conNoBench -match 'Benchmarks')) 'no run -> no section' }
+$repBenchNull = New-SystemReport -Cpu $cpuDev -Memory $memDual
+$repBenchNull.Benchmark = $bmNull
+It 'bench console null'  { Assert-Equal $true ([bool]((Write-SystemConsole $repBenchNull | Out-String) -match 'CPU              : Unavailable')) 'all-null bundle renders Unavailable lines' }
 
 Write-Host "`n$script:Pass passed, $script:Fail failed`n"
 if ($script:Fail) { exit 1 } else { exit 0 }

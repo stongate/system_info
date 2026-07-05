@@ -175,8 +175,7 @@ try {
 
     # Headless Run-click regression guard: stub the suite (New-SystemForm captures
     # ${function:Invoke-BenchmarkSuite} at build time) so the closure + handler path
-    # exercises OnStage without a real ~15 s load. Test by directly invoking what the
-    # button handler would execute, since PerformClick() doesn't work in headless STA.
+    # exercises OnStage without a real ~15 s load.
     $realSuite = ${function:Invoke-BenchmarkSuite}
     function Invoke-BenchmarkSuite { param([scriptblock]$OnStage) if ($OnStage) { $null = & $OnStage 'stub stage' }; [pscustomobject]@{ CpuStMops = 1000; CpuMtMops = 10000; ThreadCount = 16; MemStGBps = 20.0; MemMtGBps = 22.0; MemSkippedReason = $null; DiskSeqMBps = 1000; DiskRandIops = 5000; DiskSkippedReason = $null; DiskDrive = 'C:'; ElapsedS = 0.1 } }
     $repStub = New-SystemReport -Cpu $cpu -Memory $mem -Gpu $gpu -Storage $st -Firmware $fw

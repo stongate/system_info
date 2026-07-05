@@ -229,7 +229,10 @@ Earlier same-day runs ranged CPU 966–1,094 ST / 8,532–11,266 MT, disk
   fixture **8 → 9** — the tab is always present); fresh report → Benchmark tab
   has the Run button + caption and **no** results block; a report with a fake
   pre-attached Benchmark section → results KV block renders (tests the
-  renderer without a 15 s live run). The smoke never clicks Run.
+  renderer without a 15 s live run). The smoke also fires the real Run-click
+  handler against a **stubbed** `Invoke-BenchmarkSuite` (added during review —
+  it caught a closure-scope bug the structural checks missed); the real suite
+  is never invoked by tests.
 - **Real run:** `-Benchmark` console mode on this machine during final
   verification; numbers recorded in this spec's reference section.
 

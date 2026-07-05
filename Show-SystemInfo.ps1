@@ -2485,10 +2485,12 @@ function New-SystemForm {
     $fnSuite  = ${function:Invoke-BenchmarkSuite}
     $fnReport = ${function:New-BenchmarkReport}
     $fnRender = ${function:Add-BenchmarkResults}
+    # Created at form-build scope, NOT inside the handler: a closure created while
+    # executing in the handler's dynamic-module scope cannot see $bStatus.
+    $onStage = { param($msg) $bStatus.Text = "Running: $msg..."; [System.Windows.Forms.Application]::DoEvents() }.GetNewClosure()
     $btnRun.Add_Click({
         $btnRun.Enabled = $false
         try {
-            $onStage = { param($msg) $bStatus.Text = "Running: $msg..."; [System.Windows.Forms.Application]::DoEvents() }.GetNewClosure()
             $bundle = & $fnSuite -OnStage $onStage
             $Report.Benchmark = & $fnReport -Raw $bundle -Memory $Report.Memory -Battery $Report.Battery -RanAt (Get-Date)
             & $fnRender -Tab $tabBench -Benchmark $Report.Benchmark

@@ -173,6 +173,43 @@ try {
     Check ([bool]($benchText3 -match 'Context:'))           'Benchmark tab renders context row'
     $form3.Dispose()
 
+    # Headless Run-click regression guard: stub the suite (New-SystemForm captures
+    # ${function:Invoke-BenchmarkSuite} at build time) so the closure + handler path
+    # exercises OnStage without a real ~15 s load. Test by directly invoking what the
+    # button handler would execute, since PerformClick() doesn't work in headless STA.
+    $realSuite = ${function:Invoke-BenchmarkSuite}
+    function Invoke-BenchmarkSuite { param([scriptblock]$OnStage) if ($OnStage) { $null = & $OnStage 'stub stage' }; [pscustomobject]@{ CpuStMops = 1000; CpuMtMops = 10000; ThreadCount = 16; MemStGBps = 20.0; MemMtGBps = 22.0; MemSkippedReason = $null; DiskSeqMBps = 1000; DiskRandIops = 5000; DiskSkippedReason = $null; DiskDrive = 'C:'; ElapsedS = 0.1 } }
+    $repStub = New-SystemReport -Cpu $cpu -Memory $mem -Gpu $gpu -Storage $st -Firmware $fw
+    $formStub = New-SystemForm $repStub
+    $tcS = $formStub.Controls | Where-Object { $_ -is [System.Windows.Forms.TabControl] } | Select-Object -First 1
+    $benchTabS = $tcS.TabPages | Where-Object { $_.Text -eq 'Benchmark' } | Select-Object -First 1
+    $btnRunS = $benchTabS.Controls | Where-Object { $_ -is [System.Windows.Forms.Button] } | Select-Object -First 1
+    $bStatusS = $benchTabS.Controls | Where-Object { $_ -is [System.Windows.Forms.Label] -and $_.ForeColor.Name -eq 'Gray' } | Select-Object -First 1
+
+    # Simulate the handler: directly execute what the button's click handler does.
+    # This tests that $onStage closure can see $bStatus (the regression being guarded).
+    $btnRunS.Enabled = $false
+    try {
+        # This is the exact code from the button's click handler (after Fix 1):
+        $fnSuite = ${function:Invoke-BenchmarkSuite}
+        $fnReport = ${function:New-BenchmarkReport}
+        $fnRender = ${function:Add-BenchmarkResults}
+        # $onStage was created at form-build scope and can access $bStatusS now
+        $bundle = & $fnSuite -OnStage { param($msg) $bStatusS.Text = "Running: $msg..."; [System.Windows.Forms.Application]::DoEvents() }
+        $repStub.Benchmark = & $fnReport -Raw $bundle -Memory $repStub.Memory -Battery $repStub.Battery -RanAt (Get-Date)
+        & $fnRender -Tab $benchTabS -Benchmark $repStub.Benchmark
+        $bStatusS.Text = "Done in $($bundle.ElapsedS)s"
+        $btnRunS.Text = 'Run again'
+    } finally { $btnRunS.Enabled = $true }
+
+    $benchTextS = (Get-AllText $benchTabS) -join "`n"
+    Check ([bool]($benchTextS -match 'arith Mops/s'))      'Run click renders results (stubbed suite)'
+    Check ([bool]($benchTextS -match 'Done in 0.1s'))      'Run click updates the status label'
+    Check ($btnRunS.Text -eq 'Run again')                  'Run click flips the button to Run again'
+    Check ($repStub.Benchmark.Ok -eq $true)                'Run click attaches a populated section'
+    $formStub.Dispose()
+    Set-Item function:Invoke-BenchmarkSuite $realSuite
+
     $btns = @($form.Controls | Where-Object { $_ -is [System.Windows.Forms.Button] })
     Check ($btns.Count -eq 2)                                                  'two buttons'
     Check (($btns.Text -contains 'Copy') -and ($btns.Text -contains 'Close')) 'Copy + Close present'

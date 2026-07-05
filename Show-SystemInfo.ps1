@@ -1721,7 +1721,7 @@ function Invoke-BenchmarkSuite {
     }
     try {
         if (-not ('SysInfoBench' -as [type])) {
-            if ($OnStage) { & $OnStage 'compiling workloads (one-time)' }
+            if ($OnStage) { $null = & $OnStage 'compiling workloads (one-time)' }
             if ($PSVersionTable.PSEdition -eq 'Core') {
                 # pwsh's Add-Type (Roslyn) compiles Debug by default, which disables JIT
                 # optimization and understates the CPU numbers ~2.4x; force /optimize.
@@ -1733,18 +1733,18 @@ function Invoke-BenchmarkSuite {
         }
         $r.ThreadCount = [Environment]::ProcessorCount
         try {
-            if ($OnStage) { & $OnStage 'CPU (single-thread)' }
+            if ($OnStage) { $null = & $OnStage 'CPU (single-thread)' }
             $r.CpuStMops = [math]::Round([SysInfoBench]::CpuMopsSingle(1.5), 0)
-            if ($OnStage) { & $OnStage 'CPU (all threads)' }
+            if ($OnStage) { $null = & $OnStage 'CPU (all threads)' }
             $r.CpuMtMops = [math]::Round([SysInfoBench]::CpuMopsAll(2.0), 0)
         } catch { }
         try {
             $availGB = [math]::Round((Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).FreePhysicalMemory / 1MB, 1)
             if ($availGB -lt 2) { $r.MemSkippedReason = "low available memory ($availGB GB)" }
             else {
-                if ($OnStage) { & $OnStage 'memory copy (1 thread)' }
+                if ($OnStage) { $null = & $OnStage 'memory copy (1 thread)' }
                 $r.MemStGBps = [math]::Round([SysInfoBench]::MemCopyGBps(512, 1.5), 1)
-                if ($OnStage) { & $OnStage 'memory copy (all threads)' }
+                if ($OnStage) { $null = & $OnStage 'memory copy (all threads)' }
                 $r.MemMtGBps = [math]::Round([SysInfoBench]::MemCopyGBpsAll(512, 1.5), 1)
             }
         } catch { $r.MemSkippedReason = "failed ($($_.Exception.Message))" }
@@ -1755,7 +1755,7 @@ function Invoke-BenchmarkSuite {
             $freeGB = [math]::Round((New-Object IO.DriveInfo($drive)).AvailableFreeSpace / 1GB, 1)
             if ($freeGB -lt 5) { $r.DiskSkippedReason = "low free space on $drive ($freeGB GB)" }
             else {
-                if ($OnStage) { & $OnStage 'disk (writing test file)' }
+                if ($OnStage) { $null = & $OnStage 'disk (writing test file)' }
                 $tmp = Join-Path $env:TEMP 'SystemInfo-diskbench.tmp'
                 $buf = New-Object byte[] (4MB)
                 (New-Object Random(42)).NextBytes($buf)
@@ -1764,9 +1764,9 @@ function Invoke-BenchmarkSuite {
                     foreach ($i in 1..128) { $fs.Write($buf, 0, $buf.Length) }   # 512 MB
                     $fs.Flush($true)
                 } finally { $fs.Dispose() }
-                if ($OnStage) { & $OnStage 'disk read (sequential)' }
+                if ($OnStage) { $null = & $OnStage 'disk read (sequential)' }
                 $r.DiskSeqMBps = [math]::Round([SysInfoBench]::DiskSeqMBps($tmp, 4.0), 0)
-                if ($OnStage) { & $OnStage 'disk read (random 4K)' }
+                if ($OnStage) { $null = & $OnStage 'disk read (random 4K)' }
                 $r.DiskRandIops = [math]::Round([SysInfoBench]::DiskRandIops($tmp, 2.0), 0)
             }
         } catch { $r.DiskSkippedReason = "failed ($($_.Exception.Message))" }
@@ -2654,7 +2654,7 @@ function Invoke-SystemInfo {
     if ($Benchmark) {
         # -Benchmark implies console mode (a GUI must never auto-run a load).
         Write-Output 'Running benchmarks (~10-15 s)...'
-        $bundle = Invoke-BenchmarkSuite -OnStage { param($msg) Write-Output "  $msg..." }
+        $bundle = Invoke-BenchmarkSuite -OnStage { param($msg) Write-Host "  $msg..." }
         $report.Benchmark = New-BenchmarkReport -Raw $bundle -Memory $memory -Battery $battery -RanAt (Get-Date)
         Write-SystemConsole $report
         return

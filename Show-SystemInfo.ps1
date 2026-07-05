@@ -1585,6 +1585,189 @@ function Get-FirmwareInfo {
     }
 }
 
+# C# workloads for the on-demand benchmark suite (compiled once per session via
+# Add-Type; C# 5-compatible for the Windows PowerShell 5.1 CodeDom compiler).
+$script:SysInfoBenchCs = @'
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Threading.Tasks;
+
+public static class SysInfoBench {
+    // Plain integer+float mix (xorshift + multiply-add). Deliberately NOT crypto:
+    // SHA-NI-capable CPUs would skew cross-machine comparisons. "Ops" are nominal.
+    public static double CpuMopsSingle(double seconds) {
+        var sw = Stopwatch.StartNew();
+        ulong x = 88172645463325252UL; double acc = 1.000000001; long ops = 0;
+        while (sw.Elapsed.TotalSeconds < seconds) {
+            for (int i = 0; i < 1000000; i++) {
+                x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+                acc = acc * 1.0000001 + (x & 0xFF);
+            }
+            ops += 2000000;
+        }
+        sw.Stop();
+        if (acc == 12345.6789) Console.WriteLine("");  // defeat dead-code elimination
+        return ops / sw.Elapsed.TotalSeconds / 1e6;
+    }
+    public static double CpuMopsAll(double seconds) {
+        int n = Environment.ProcessorCount;
+        long[] counts = new long[n];
+        var sw = Stopwatch.StartNew();
+        Parallel.For(0, n, t => {
+            ulong x = 88172645463325252UL + (ulong)t * 2654435761UL;
+            double acc = 1.000000001;
+            while (sw.Elapsed.TotalSeconds < seconds) {
+                for (int i = 0; i < 1000000; i++) {
+                    x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+                    acc = acc * 1.0000001 + (x & 0xFF);
+                }
+                counts[t] += 2000000;
+            }
+            if (acc == 12345.6789) Console.WriteLine("");
+        });
+        sw.Stop();
+        long total = 0; foreach (var c in counts) total += c;
+        return total / sw.Elapsed.TotalSeconds / 1e6;
+    }
+    // Copy bandwidth over buffers far beyond L3 so cache cannot lie.
+    // Bytes touched = 2x bytes copied (read + write).
+    public static double MemCopyGBps(int totalMB, double seconds) {
+        int half = totalMB * 1024 * 1024 / 2;
+        byte[] src = new byte[half]; byte[] dst = new byte[half];
+        new Random(42).NextBytes(src);
+        long bytes = 0; var sw = Stopwatch.StartNew();
+        while (sw.Elapsed.TotalSeconds < seconds) {
+            Buffer.BlockCopy(src, 0, dst, 0, half);
+            bytes += half;
+        }
+        sw.Stop();
+        return (bytes * 2.0) / sw.Elapsed.TotalSeconds / 1e9;
+    }
+    public static double MemCopyGBpsAll(int totalMB, double seconds) {
+        int half = totalMB * 1024 * 1024 / 2;
+        byte[] src = new byte[half]; byte[] dst = new byte[half];
+        new Random(42).NextBytes(src);
+        int n = Environment.ProcessorCount;
+        int slice = half / n;
+        long[] counts = new long[n];
+        var sw = Stopwatch.StartNew();
+        Parallel.For(0, n, t => {
+            int off = t * slice;
+            while (sw.Elapsed.TotalSeconds < seconds) {
+                Buffer.BlockCopy(src, off, dst, off, slice);
+                counts[t] += slice;
+            }
+        });
+        sw.Stop();
+        long total = 0; foreach (var c in counts) total += c;
+        return (total * 2.0) / sw.Elapsed.TotalSeconds / 1e9;
+    }
+    // Unbuffered (FILE_FLAG_NO_BUFFERING) reads so the file cache cannot inflate
+    // the numbers. Single-stream / QD1 by design - labelled as such in the UI.
+    public static double DiskSeqMBps(string path, double capSeconds) {
+        const FileOptions NoBuf = (FileOptions)0x20000000;
+        byte[] buf = new byte[1024 * 1024];
+        long bytes = 0;
+        var sw = Stopwatch.StartNew();
+        using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, buf.Length, NoBuf)) {
+            int n;
+            while ((n = fs.Read(buf, 0, buf.Length)) > 0) {
+                bytes += n;
+                if (sw.Elapsed.TotalSeconds >= capSeconds) break;   // HDDs may not finish
+            }
+        }
+        sw.Stop();
+        if (bytes == 0) return 0;
+        return bytes / sw.Elapsed.TotalSeconds / 1e6;
+    }
+    public static double DiskRandIops(string path, double seconds) {
+        const FileOptions NoBuf = (FileOptions)0x20000000;
+        byte[] buf = new byte[4096];
+        var rng = new Random(3);
+        long ops = 0; double elapsed;
+        using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, NoBuf)) {
+            long len = fs.Length;
+            var sw = Stopwatch.StartNew();
+            while (sw.Elapsed.TotalSeconds < seconds) {
+                long pos = (long)(rng.NextDouble() * (len - 8192));
+                pos = pos - (pos % 4096);   // sector-aligned for NO_BUFFERING
+                fs.Position = pos;
+                fs.Read(buf, 0, 4096);
+                ops++;
+            }
+            sw.Stop();
+            elapsed = sw.Elapsed.TotalSeconds;
+        }
+        return ops / elapsed;
+    }
+}
+'@
+
+function Invoke-BenchmarkSuite {
+    # On-demand micro-benchmark run (I/O + timed CPU/memory/disk load). NEVER runs
+    # automatically - callers are the -Benchmark switch and the GUI Run button.
+    # Guards: memory stage skipped below 2 GB available RAM; disk stage skipped
+    # below 5 GB free. Each stage try/catch -> nulls + reason; a total failure
+    # returns a bundle of nulls - never throws. -OnStage (optional scriptblock)
+    # is invoked with a short label before each stage, for progress display.
+    param([scriptblock] $OnStage)
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $r = [pscustomobject]@{
+        CpuStMops = $null; CpuMtMops = $null; ThreadCount = $null
+        MemStGBps = $null; MemMtGBps = $null; MemSkippedReason = $null
+        DiskSeqMBps = $null; DiskRandIops = $null; DiskSkippedReason = $null; DiskDrive = $null
+        ElapsedS = $null
+    }
+    try {
+        if (-not ('SysInfoBench' -as [type])) {
+            if ($OnStage) { & $OnStage 'compiling workloads (one-time)' }
+            Add-Type -TypeDefinition $script:SysInfoBenchCs -Language CSharp
+        }
+        $r.ThreadCount = [Environment]::ProcessorCount
+        try {
+            if ($OnStage) { & $OnStage 'CPU (single-thread)' }
+            $r.CpuStMops = [math]::Round([SysInfoBench]::CpuMopsSingle(1.5), 0)
+            if ($OnStage) { & $OnStage 'CPU (all threads)' }
+            $r.CpuMtMops = [math]::Round([SysInfoBench]::CpuMopsAll(2.0), 0)
+        } catch { }
+        try {
+            $availGB = [math]::Round((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB, 1)
+            if ($availGB -lt 2) { $r.MemSkippedReason = "low available memory ($availGB GB)" }
+            else {
+                if ($OnStage) { & $OnStage 'memory copy (1 thread)' }
+                $r.MemStGBps = [math]::Round([SysInfoBench]::MemCopyGBps(512, 1.5), 1)
+                if ($OnStage) { & $OnStage 'memory copy (all threads)' }
+                $r.MemMtGBps = [math]::Round([SysInfoBench]::MemCopyGBpsAll(512, 1.5), 1)
+            }
+        } catch { $r.MemSkippedReason = "failed ($($_.Exception.Message))" }
+        $tmp = $null
+        try {
+            $drive = Split-Path -Qualifier $env:TEMP
+            $r.DiskDrive = $drive
+            $freeGB = [math]::Round((New-Object IO.DriveInfo($drive)).AvailableFreeSpace / 1GB, 1)
+            if ($freeGB -lt 5) { $r.DiskSkippedReason = "low free space on $drive ($freeGB GB)" }
+            else {
+                if ($OnStage) { & $OnStage 'disk (writing test file)' }
+                $tmp = Join-Path $env:TEMP 'SystemInfo-diskbench.tmp'
+                $buf = New-Object byte[] (4MB)
+                (New-Object Random(42)).NextBytes($buf)
+                $fs = [IO.File]::Create($tmp)
+                foreach ($i in 1..128) { $fs.Write($buf, 0, $buf.Length) }   # 512 MB
+                $fs.Flush($true); $fs.Close()
+                if ($OnStage) { & $OnStage 'disk read (sequential)' }
+                $r.DiskSeqMBps = [math]::Round([SysInfoBench]::DiskSeqMBps($tmp, 4.0), 0)
+                if ($OnStage) { & $OnStage 'disk read (random 4K)' }
+                $r.DiskRandIops = [math]::Round([SysInfoBench]::DiskRandIops($tmp, 2.0), 0)
+            }
+        } catch { $r.DiskSkippedReason = "failed ($($_.Exception.Message))" }
+        finally { if ($tmp -and (Test-Path $tmp)) { [IO.File]::Delete($tmp) } }
+    } catch { }
+    $sw.Stop()
+    $r.ElapsedS = [math]::Round($sw.Elapsed.TotalSeconds, 1)
+    return $r
+}
+
 # =====================================================================
 # Renderers
 # =====================================================================

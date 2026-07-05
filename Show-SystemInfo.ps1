@@ -8,7 +8,7 @@
     Some derived facts (CPU max memory speed, codename) aren't in firmware and
     come from a generation-level offline lookup.
 #>
-param([switch]$Console)
+param([switch]$Console, [switch]$Benchmark)
 
 # =====================================================================
 # Decoders / parsing (pure)
@@ -2585,7 +2585,7 @@ function Show-SystemWindow {
 # =====================================================================
 
 function Invoke-SystemInfo {
-    param([switch]$Console)
+    param([switch]$Console, [switch]$Benchmark)
 
     try {
         $modules = @(Get-RamModules)
@@ -2651,6 +2651,14 @@ function Invoke-SystemInfo {
 
     $report = New-SystemReport -Cpu $cpu -Memory $memory -Gpu $gpu -Storage $storage -Battery $battery -Load $load -Network $network -GpuSensor $gpuSensor -Firmware $firmware
 
+    if ($Benchmark) {
+        # -Benchmark implies console mode (a GUI must never auto-run a load).
+        Write-Output 'Running benchmarks (~10-15 s)...'
+        $bundle = Invoke-BenchmarkSuite -OnStage { param($msg) Write-Output "  $msg..." }
+        $report.Benchmark = New-BenchmarkReport -Raw $bundle -Memory $memory -Battery $battery -RanAt (Get-Date)
+        Write-SystemConsole $report
+        return
+    }
     if ($Console) { Write-SystemConsole $report; return }
 
     try {
@@ -2662,5 +2670,5 @@ function Invoke-SystemInfo {
 }
 
 if (-not $env:SYSTEMINFO_NOMAIN) {
-    Invoke-SystemInfo -Console:$Console
+    Invoke-SystemInfo -Console:$Console -Benchmark:$Benchmark
 }

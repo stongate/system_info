@@ -1236,6 +1236,36 @@ function Get-SystemInsights {
 }
 
 # =====================================================================
+# Benchmarks (slice L)
+# =====================================================================
+
+function New-BenchmarkReport {
+    # Shape an on-demand benchmark run into the report section (pure). References
+    # are derivable-only: memory theoretical peak = channels x 8 B x MT/s (channels
+    # estimated as min(populated slots, 2), labelled), and the MT/ST scale factor.
+    # No good/bad verdicts, no shipped comparison data.
+    param([object] $Raw, [object] $Memory = $null, [object] $Battery = $null, [datetime] $RanAt)
+    $scale = if ($null -ne $Raw.CpuStMops -and $null -ne $Raw.CpuMtMops -and [double]$Raw.CpuStMops -gt 0) {
+        [math]::Round([double]$Raw.CpuMtMops / [double]$Raw.CpuStMops, 1)
+    } else { $null }
+    $theo = $null; $chanNote = $null
+    if ($null -ne $Memory -and $null -ne $Memory.RunningSpeed -and [int]$Memory.RunningSpeed -gt 0 -and
+        $null -ne $Memory.PopulatedSlots -and [int]$Memory.PopulatedSlots -ge 1) {
+        $chan = [Math]::Min([int]$Memory.PopulatedSlots, 2)
+        $theo = [math]::Round($chan * 8 * [int]$Memory.RunningSpeed / 1000, 1)
+        $chanNote = if ($chan -eq 2) { 'assumes dual-channel' } else { '1 module = 1 channel' }
+    }
+    $randMBps = if ($null -ne $Raw.DiskRandIops) { [math]::Round([double]$Raw.DiskRandIops * 4096 / 1e6, 1) } else { $null }
+    [pscustomobject]@{
+        Cpu     = [pscustomobject]@{ StMops = $Raw.CpuStMops; MtMops = $Raw.CpuMtMops; Scale = $scale; Threads = $Raw.ThreadCount }
+        Memory  = [pscustomobject]@{ StGBps = $Raw.MemStGBps; MtGBps = $Raw.MemMtGBps; TheoreticalGBps = $theo; ChannelAssumption = $chanNote; SkippedReason = $Raw.MemSkippedReason }
+        Disk    = [pscustomobject]@{ Drive = $Raw.DiskDrive; SeqMBps = $Raw.DiskSeqMBps; RandIops = $Raw.DiskRandIops; RandMBps = $randMBps; SkippedReason = $Raw.DiskSkippedReason }
+        Context = [pscustomobject]@{ OnAC = $(if ($Battery) { $Battery.IsOnAC } else { $null }); PowerPlan = $(if ($Battery -and $Battery.PowerPlan) { $Battery.PowerPlan } else { $null }); RanAt = $RanAt }
+        Ok      = [bool]($null -ne $Raw.CpuStMops -or $null -ne $Raw.MemStGBps -or $null -ne $Raw.DiskSeqMBps)
+    }
+}
+
+# =====================================================================
 # System report composer (pure)
 # =====================================================================
 
@@ -1260,6 +1290,7 @@ function New-SystemReport {
         Gaming    = $gaming
         Firmware  = $Firmware
         Upgrade   = $upgrade
+        Benchmark = $null   # on-demand; assigned by -Benchmark / the GUI Run button
         Insights  = $insights
     }
 }

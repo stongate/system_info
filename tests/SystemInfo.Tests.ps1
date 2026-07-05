@@ -863,5 +863,61 @@ It 'fw console verdict'   { Assert-Equal $true ([bool]($conFw -match 'running Wi
 $conNoFw = (Write-SystemConsole (New-SystemReport -Cpu $cpuDev -Memory $memDual -Gpu $gpu -Storage $st) | Out-String)
 It 'fw console absent'    { Assert-Equal $false ([bool]($conNoFw -match 'Firmware & Security')) 'absent' }
 
+# =====================================================================
+# Benchmarks (slice L)
+# =====================================================================
+
+Write-Host "`nNew-BenchmarkReport" -ForegroundColor Cyan
+$benchRawFull = [pscustomobject]@{
+    CpuStMops = 1014; CpuMtMops = 11080; ThreadCount = 16
+    MemStGBps = 19.3; MemMtGBps = 34.0; MemSkippedReason = $null
+    DiskSeqMBps = 1186; DiskRandIops = 5135; DiskSkippedReason = $null; DiskDrive = 'C:'
+    ElapsedS = 11.5
+}
+$benchBat = New-BatteryReport -ChargePercent 100 -IsOnAC $true -IsCharging $false -DesignCapacityMWh 95065 -FullChargeCapacityMWh 52166 -CycleCount 0 -Chemistry 'LiP' -Manufacturer 'SMP' -PowerPlan 'Balanced' -PowerPlanGuid 'x'
+$bm = New-BenchmarkReport -Raw $benchRawFull -Memory $memDual -Battery $benchBat -RanAt ([datetime]'2026-07-05 10:00')
+It 'bench cpu st'      { Assert-Equal 1014 $bm.Cpu.StMops 'st mops' }
+It 'bench cpu scale'   { Assert-Equal 10.9 $bm.Cpu.Scale 'mt/st scale 1 decimal' }
+It 'bench theo dual'   { Assert-Equal 46.9 $bm.Memory.TheoreticalGBps '2ch x 8B x 2933 = 46.9' }
+It 'bench theo label'  { Assert-Equal 'assumes dual-channel' $bm.Memory.ChannelAssumption 'dual label' }
+It 'bench rand mbps'   { Assert-Equal 21 $bm.Disk.RandMBps '5135 iops x 4096 = 21.0 MB/s' }
+It 'bench ctx ac'      { Assert-Equal $true $bm.Context.OnAC 'on AC from battery section' }
+It 'bench ctx plan'    { Assert-Equal 'Balanced' $bm.Context.PowerPlan 'plan from battery section' }
+It 'bench ok'          { Assert-Equal $true $bm.Ok 'measured -> ok' }
+$bmSingle = New-BenchmarkReport -Raw $benchRawFull -Memory $memSingle -Battery $null -RanAt ([datetime]'2026-07-05 10:00')
+It 'bench theo single' { Assert-Equal 25.6 $bmSingle.Memory.TheoreticalGBps '1ch x 8B x 3200 = 25.6' }
+It 'bench single lbl'  { Assert-Equal '1 module = 1 channel' $bmSingle.Memory.ChannelAssumption 'single label' }
+It 'bench no battery'  { Assert-Equal $null $bmSingle.Context.OnAC 'no battery -> null context' }
+$memNoSpeed = New-MemoryReport -Modules @([pscustomobject]@{ Slot='A'; CapacityBytes=8589934592; RatedSpeed=0; CurrentSpeed=0; VendorRaw='x'; PartNumber='y'; TypeCode=26 }) -MaxCapacityBytes 68719476736 -TotalSlots 2 -BoardMaker x -BoardModel y
+$bmNoSpeed = New-BenchmarkReport -Raw $benchRawFull -Memory $memNoSpeed -Battery $null -RanAt ([datetime]'2026-07-05 10:00')
+It 'bench theo unknown' { Assert-Equal $null $bmNoSpeed.Memory.TheoreticalGBps 'unknown speed -> null theoretical' }
+$bmNoSlots = New-BenchmarkReport -Raw $benchRawFull -Memory ([pscustomobject]@{ RunningSpeed = 2933; PopulatedSlots = 0 }) -Battery $null -RanAt ([datetime]'2026-07-05 10:00')
+It 'bench theo no slots' { Assert-Equal $null $bmNoSlots.Memory.TheoreticalGBps 'unknown slot count -> null theoretical' }
+$benchRawSkips = [pscustomobject]@{
+    CpuStMops = 1014; CpuMtMops = 11080; ThreadCount = 16
+    MemStGBps = $null; MemMtGBps = $null; MemSkippedReason = 'low available memory (1.0 GB)'
+    DiskSeqMBps = $null; DiskRandIops = $null; DiskSkippedReason = 'low free space on C: (3.2 GB)'; DiskDrive = 'C:'
+    ElapsedS = 4.0
+}
+$bmSkips = New-BenchmarkReport -Raw $benchRawSkips -Memory $memDual -Battery $null -RanAt ([datetime]'2026-07-05 10:00')
+It 'bench mem skip'    { Assert-Equal 'low available memory (1.0 GB)' $bmSkips.Memory.SkippedReason 'mem skip reason surfaced' }
+It 'bench disk skip'   { Assert-Equal 'low free space on C: (3.2 GB)' $bmSkips.Disk.SkippedReason 'disk skip reason surfaced' }
+It 'bench skip ok'     { Assert-Equal $true $bmSkips.Ok 'cpu still measured -> ok' }
+$benchRawNull = [pscustomobject]@{
+    CpuStMops = $null; CpuMtMops = $null; ThreadCount = $null
+    MemStGBps = $null; MemMtGBps = $null; MemSkippedReason = $null
+    DiskSeqMBps = $null; DiskRandIops = $null; DiskSkippedReason = $null; DiskDrive = $null
+    ElapsedS = 0.1
+}
+$bmNull = New-BenchmarkReport -Raw $benchRawNull -Memory $null -Battery $null -RanAt ([datetime]'2026-07-05 10:00')
+It 'bench all null ok' { Assert-Equal $false $bmNull.Ok 'nothing measured -> not ok' }
+It 'bench null theo'   { Assert-Equal $null $bmNull.Memory.TheoreticalGBps 'no memory section -> null' }
+It 'bench ranat'       { Assert-Equal ([datetime]'2026-07-05 10:00') $bm.Context.RanAt 'RanAt passed through (deterministic)' }
+
+Write-Host "`nSystem report (Benchmark placeholder)" -ForegroundColor Cyan
+$repBenchPh = New-SystemReport -Cpu $cpuDev -Memory $memDual
+It 'bench placeholder' { Assert-Equal $true ($repBenchPh.PSObject.Properties.Name -contains 'Benchmark') 'report has Benchmark property' }
+It 'bench ph null'     { Assert-Equal $null $repBenchPh.Benchmark 'placeholder starts null' }
+
 Write-Host "`n$script:Pass passed, $script:Fail failed`n"
 if ($script:Fail) { exit 1 } else { exit 0 }

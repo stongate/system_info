@@ -183,24 +183,36 @@ Passive slices are collector → builder → insights → renderers. Benchmarks 
   same lines. Without the switch: no section.
 - **Overview: unchanged** (passive snapshot; benchmarks are on-demand).
 
-## Reference data (dev machine — recorded at implementation)
+## Reference data (dev machine — captured at implementation, 2026-07-05)
 
-Expected from the probes: CPU ≈ 1,000 ST / ≈ 11,000 MT arith Mops/s (~10–11×);
-memory 1T ≈ 19 GB/s with the all-thread number landing between that and the
-46.9 GB/s theoretical; disk ≈ 1,000–1,200 MB/s sequential, ≈ 5,000 IOPS random
-4K. **The memory stage may legitimately skip on this machine** (it was at 1 GB
-available during grounding) — if it does, the skip line is itself the verified
-graceful-degradation path; re-run after freeing RAM for the full capture. Real
-numbers, and the all-thread memory figure, get recorded here during
-implementation verification.
+Real `-Benchmark` run (Windows PowerShell 5.1 via the launcher path, on AC,
+Balanced plan, 2.4 GB RAM available):
+
+```
+CPU              : 995 arith Mops/s single-thread -> 10,978 all-threads (11x on 16 threads)
+Memory           : 19.3 GB/s copy (1 thread) / 20.8 GB/s (all threads); theoretical peak ~46.9 GB/s (assumes dual-channel)
+Disk             : C: 1,197 MB/s sequential / 8,360 IOPS random 4K (~34.2 MB/s)
+Context          : on AC power, Balanced plan, 2026-07-05 19:42 (short-burst)
+```
+
+Two honest findings from the captures:
+- **All-thread memory copy ≈ single-thread** (20.8 vs 19.3 GB/s) — one thread
+  already saturates this laptop's copy bandwidth; the spec's illustrative
+  "34.0" did not materialize here. The theoretical-peak line makes the gap
+  visible without judging it (copy ≠ pure-read; the peak is a bus ceiling).
+- **The memory guard fired live during development** (1.9 GB available →
+  `Unavailable (low available memory (1.9 GB))`) — the graceful-degradation
+  path was exercised on real pressure, not just fixtures.
+Earlier same-day runs ranged CPU 966–1,094 ST / 8,532–11,266 MT, disk
+1,031–1,389 MB/s seq / 5,285–8,500 IOPS — normal short-burst variance.
 
 ## Testing
 
 - **Pure `New-BenchmarkReport`:**
   - Full bundle + dual-channel DDR4-2933 Memory section → `TheoreticalGBps`
     46.9, `Scale` computed, context from Battery (`OnAC`, plan), `Ok = $true`.
-  - Single-module Memory section → 1-channel theoretical (23.5),
-    `ChannelAssumption` says single.
+  - Single-module Memory section → 1-channel theoretical (25.6 for the
+    3200 MT/s test fixture), `ChannelAssumption` says single.
   - Memory section with unknown running speed (or unknown populated-slot
     count) → `TheoreticalGBps = $null`, no crash.
   - Bundle with `MemSkippedReason`/`DiskSkippedReason` → reasons surfaced,

@@ -184,23 +184,12 @@ try {
     $tcS = $formStub.Controls | Where-Object { $_ -is [System.Windows.Forms.TabControl] } | Select-Object -First 1
     $benchTabS = $tcS.TabPages | Where-Object { $_.Text -eq 'Benchmark' } | Select-Object -First 1
     $btnRunS = $benchTabS.Controls | Where-Object { $_ -is [System.Windows.Forms.Button] } | Select-Object -First 1
-    $bStatusS = $benchTabS.Controls | Where-Object { $_ -is [System.Windows.Forms.Label] -and $_.ForeColor.Name -eq 'Gray' } | Select-Object -First 1
-
-    # Simulate the handler: directly execute what the button's click handler does.
-    # This tests that $onStage closure can see $bStatus (the regression being guarded).
-    $btnRunS.Enabled = $false
-    try {
-        # This is the exact code from the button's click handler (after Fix 1):
-        $fnSuite = ${function:Invoke-BenchmarkSuite}
-        $fnReport = ${function:New-BenchmarkReport}
-        $fnRender = ${function:Add-BenchmarkResults}
-        # $onStage was created at form-build scope and can access $bStatusS now
-        $bundle = & $fnSuite -OnStage { param($msg) $bStatusS.Text = "Running: $msg..."; [System.Windows.Forms.Application]::DoEvents() }
-        $repStub.Benchmark = & $fnReport -Raw $bundle -Memory $repStub.Memory -Battery $repStub.Battery -RanAt (Get-Date)
-        & $fnRender -Tab $benchTabS -Benchmark $repStub.Benchmark
-        $bStatusS.Text = "Done in $($bundle.ElapsedS)s"
-        $btnRunS.Text = 'Run again'
-    } finally { $btnRunS.Enabled = $true }
+    # Fire the REAL click handler. PerformClick() is a silent no-op on a
+    # never-shown form (visibility gate), so raise the protected OnClick.
+    $onClickM = [System.Windows.Forms.Control].GetMethod('OnClick', [System.Reflection.BindingFlags]::Instance -bor [System.Reflection.BindingFlags]::NonPublic)
+    $clickErr = $null
+    try { $onClickM.Invoke($btnRunS, @([System.EventArgs]::Empty)) } catch { $clickErr = $_.Exception.InnerException }
+    Check ($null -eq $clickErr) 'Run click handler ran without error'
 
     $benchTextS = (Get-AllText $benchTabS) -join "`n"
     Check ([bool]($benchTextS -match 'arith Mops/s'))      'Run click renders results (stubbed suite)'

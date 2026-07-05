@@ -2053,6 +2053,52 @@ function Add-KvBlock {
     return ($Y + $Keys.Count * 20 + 8)
 }
 
+function Add-BenchmarkResults {
+    # Render (or re-render) benchmark results into the Benchmark tab. String
+    # composition intentionally mirrors the console section (per-renderer
+    # duplication is the house idiom). Values are split across KV rows because
+    # Add-KvBlock does not wrap long lines.
+    param($Tab, $Benchmark)
+    $old = $Tab.Controls['BenchResults']
+    if ($old) { $Tab.Controls.Remove($old); $old.Dispose() }
+    $bmr = $Benchmark
+    $cparts = @()
+    if ($null -ne $bmr.Cpu.StMops) { $cparts += '{0:N0} arith Mops/s single-thread' -f $bmr.Cpu.StMops }
+    if ($null -ne $bmr.Cpu.MtMops) { $cparts += '{0:N0} all-threads ({1}x on {2} threads)' -f $bmr.Cpu.MtMops, $bmr.Cpu.Scale, $bmr.Cpu.Threads }
+    $cpuStr = if ($cparts.Count) { $cparts -join ' -> ' } else { 'Unavailable' }
+    $mparts = @()
+    if ($null -ne $bmr.Memory.StGBps) { $mparts += '{0:N1} GB/s copy (1 thread)' -f $bmr.Memory.StGBps }
+    if ($null -ne $bmr.Memory.MtGBps) { $mparts += '{0:N1} GB/s (all threads)' -f $bmr.Memory.MtGBps }
+    $memStr = if ($mparts.Count) { $mparts -join ' / ' }
+              elseif ($bmr.Memory.SkippedReason) { "Unavailable ($($bmr.Memory.SkippedReason))" } else { 'Unavailable' }
+    $memRef = if ($null -ne $bmr.Memory.TheoreticalGBps) { 'theoretical peak ~{0:N1} GB/s ({1})' -f $bmr.Memory.TheoreticalGBps, $bmr.Memory.ChannelAssumption } else { '' }
+    $dparts = @()
+    if ($null -ne $bmr.Disk.SeqMBps) { $dparts += '{0:N0} MB/s sequential' -f $bmr.Disk.SeqMBps }
+    if ($null -ne $bmr.Disk.RandIops) { $dparts += '{0:N0} IOPS random 4K (~{1:N1} MB/s)' -f $bmr.Disk.RandIops, $bmr.Disk.RandMBps }
+    $diskStr = if ($dparts.Count) { $(if ($bmr.Disk.Drive) { "$($bmr.Disk.Drive) " } else { '' }) + ($dparts -join ' / ') }
+               elseif ($bmr.Disk.SkippedReason) { "Unavailable ($($bmr.Disk.SkippedReason))" } else { 'Unavailable' }
+    $ctxParts = @()
+    if ($bmr.Context.OnAC -eq $true) { $ctxParts += 'on AC power' } elseif ($bmr.Context.OnAC -eq $false) { $ctxParts += 'on battery' }
+    if ($bmr.Context.PowerPlan) { $ctxParts += "$($bmr.Context.PowerPlan) plan" }
+    $ctxParts += '{0:yyyy-MM-dd HH:mm}' -f $bmr.Context.RanAt
+    $ctxStr = ($ctxParts -join ', ') + ' (short-burst)'
+    $keys = @('CPU:', 'Memory:', '', 'Disk:', 'Context:')
+    $vals = @($cpuStr, $memStr, $memRef, $diskStr, $ctxStr)
+    $panel = New-Object System.Windows.Forms.Panel
+    $panel.Name = 'BenchResults'
+    $panel.Location = New-Object System.Drawing.Point(0, 104)
+    $panel.Size = New-Object System.Drawing.Size(600, 220)
+    $panel.Anchor = 'Top,Left,Right'
+    $y = Add-KvBlock -Parent $panel -Keys $keys -Values $vals -KeyW 70 -ValW 500
+    $bcap = New-Object System.Windows.Forms.Label
+    $bcap.Text = "Measured by this tool's own workloads - comparable across runs of this tool, not to`r`nother benchmarks. Disk is single-stream (QD1) - spec-sheet numbers need deep queues."
+    $bcap.Location = New-Object System.Drawing.Point(14, ($y + 6))
+    $bcap.AutoSize = $true
+    $bcap.ForeColor = [System.Drawing.Color]::Gray
+    $panel.Controls.Add($bcap)
+    $Tab.Controls.Add($panel)
+}
+
 function New-SystemForm {
     # Tabbed WinForms window (Overview / CPU / Memory). Returns the form without
     # showing it, so it can be smoke-tested headlessly.
@@ -2412,6 +2458,38 @@ function New-SystemForm {
         [void]$tabs.TabPages.Add($tabLive)
     }
 
+    # --- Benchmark tab (on-demand prober; always present - runs only on click) ---
+    $tabBench = New-Object System.Windows.Forms.TabPage
+    $tabBench.Text = 'Benchmark'
+    $bCap = New-Object System.Windows.Forms.Label
+    $bCap.Text = "Measures this machine right now - CPU arithmetic, memory bandwidth, disk read.`r`nTakes ~10-15 seconds and loads the machine. Nothing runs until you click."
+    $bCap.Location = New-Object System.Drawing.Point(14, 14)
+    $bCap.AutoSize = $true
+    $tabBench.Controls.Add($bCap)
+    $btnRun = New-Object System.Windows.Forms.Button
+    $btnRun.Text = 'Run benchmarks'
+    $btnRun.Size = New-Object System.Drawing.Size(130, 30)
+    $btnRun.Location = New-Object System.Drawing.Point(14, 64)
+    $tabBench.Controls.Add($btnRun)
+    $bStatus = New-Object System.Windows.Forms.Label
+    $bStatus.Text = ''
+    $bStatus.Location = New-Object System.Drawing.Point(154, 71)
+    $bStatus.AutoSize = $true
+    $bStatus.ForeColor = [System.Drawing.Color]::Gray
+    $tabBench.Controls.Add($bStatus)
+    if ($Report.Benchmark) { Add-BenchmarkResults -Tab $tabBench -Benchmark $Report.Benchmark }
+    $btnRun.Add_Click({
+        $btnRun.Enabled = $false
+        $onStage = { param($msg) $bStatus.Text = "Running: $msg..."; [System.Windows.Forms.Application]::DoEvents() }.GetNewClosure()
+        $bundle = Invoke-BenchmarkSuite -OnStage $onStage
+        $Report.Benchmark = New-BenchmarkReport -Raw $bundle -Memory $Report.Memory -Battery $Report.Battery -RanAt (Get-Date)
+        Add-BenchmarkResults -Tab $tabBench -Benchmark $Report.Benchmark
+        $bStatus.Text = "Done in $($bundle.ElapsedS)s"
+        $btnRun.Text = 'Run again'
+        $btnRun.Enabled = $true
+    }.GetNewClosure())
+    [void]$tabs.TabPages.Add($tabBench)
+
     # --- Network tab (only when at least one adapter is up) ---
     if ($null -ne $Report.Network -and @($Report.Network.Adapters).Count -gt 0) {
         $tabNet = New-Object System.Windows.Forms.TabPage
@@ -2554,9 +2632,10 @@ function New-SystemForm {
     $btnCopy.Size = New-Object System.Drawing.Size(90, 30)
     $btnCopy.Location = New-Object System.Drawing.Point(434, 540)
     $btnCopy.Anchor = 'Bottom,Right'
-    $copyText = (Write-SystemConsole $Report | Out-String).Trim()
+    # Rendered at click time (not form-build time) so an on-demand benchmark run
+    # is included once it exists; output is otherwise identical.
     $btnCopy.Add_Click({
-        try { [System.Windows.Forms.Clipboard]::SetText($copyText); $btnCopy.Text = 'Copied!' }
+        try { [System.Windows.Forms.Clipboard]::SetText((Write-SystemConsole $Report | Out-String).Trim()); $btnCopy.Text = 'Copied!' }
         catch { $btnCopy.Text = 'Copy failed' }
     }.GetNewClosure())
     $form.Controls.Add($btnCopy)
@@ -2653,7 +2732,7 @@ function Invoke-SystemInfo {
 
     if ($Benchmark) {
         # -Benchmark implies console mode (a GUI must never auto-run a load).
-        Write-Output 'Running benchmarks (~10-15 s)...'
+        Write-Host 'Running benchmarks (~10-15 s)...'
         $bundle = Invoke-BenchmarkSuite -OnStage { param($msg) Write-Host "  $msg..." }
         $report.Benchmark = New-BenchmarkReport -Raw $bundle -Memory $memory -Battery $battery -RanAt (Get-Date)
         Write-SystemConsole $report

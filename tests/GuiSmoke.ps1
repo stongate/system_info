@@ -31,6 +31,8 @@ $load = New-LoadReport -TotalPhysicalBytes 17179869184 -AvailableBytes 100000000
 $net = New-NetworkReport -Adapters @([pscustomobject]@{ Name='Wi-Fi'; PhysicalMediaType='Native 802.11'; SpeedBps=324000000; Wlan=([pscustomobject]@{ State='connected'; Band='5 GHz'; RadioType='802.11ax'; SignalPercent=80; ReceiveMbps=360; TransmitMbps=324 }); MaxSupportedMbps=$null })
 $gsen = New-GpuSensorReport -Name 'NVIDIA GeForce RTX 2060 with Max-Q Design' -TempC 50 -UtilPercent 0 -ClockMHz 300 -MaxClockMHz 2100 -PowerW 8.38 -PState 'P8' -SwThermal 'Not Active' -HwThermal 'Not Active'
 $fw = New-FirmwareReport -Raw ([pscustomobject]@{ BiosVendor='Dell Inc.'; BiosVersion='1.33.1'; BiosDate=[datetime]'2024-11-17'; IsUefi=$true; SecureBootRaw=1; TpmName='Trusted Platform Module 2.0'; OsBuild=26200; RamBytes=17179869184; SysDriveBytes=1024209543168; AddressWidth=64 })
+$benchRaw = [pscustomobject]@{ CpuStMops = 1014; CpuMtMops = 11080; ThreadCount = 16; MemStGBps = 19.3; MemMtGBps = 34.0; MemSkippedReason = $null; DiskSeqMBps = 1186; DiskRandIops = 5135; DiskSkippedReason = $null; DiskDrive = 'C:'; ElapsedS = 11.5 }
+$benchFake = New-BenchmarkReport -Raw $benchRaw -Memory $mem -Battery $bat -RanAt ([datetime]'2026-07-05 10:00')
 $report = New-SystemReport -Cpu $cpu -Memory $mem -Gpu $gpu -Storage $st -Battery $bat -Load $load -Network $net -GpuSensor $gsen -Firmware $fw
 $reportNoBat = New-SystemReport -Cpu $cpu -Memory $mem -Gpu $gpu -Storage $st -Firmware $fw
 
@@ -50,9 +52,9 @@ try {
     Check ($form.Text -eq 'System Info')            'window title'
     $tabControl = $form.Controls | Where-Object { $_ -is [System.Windows.Forms.TabControl] } | Select-Object -First 1
     Check ($null -ne $tabControl)            'has a TabControl'
-    Check ($tabControl.TabPages.Count -eq 11) 'eleven tabs'
+    Check ($tabControl.TabPages.Count -eq 12) 'twelve tabs'
     $tabNames = @($tabControl.TabPages | ForEach-Object { $_.Text })
-    Check (($tabNames -contains 'Overview') -and ($tabNames -contains 'CPU') -and ($tabNames -contains 'GPU') -and ($tabNames -contains 'Memory') -and ($tabNames -contains 'Storage') -and ($tabNames -contains 'Gaming') -and ($tabNames -contains 'Battery') -and ($tabNames -contains 'Live') -and ($tabNames -contains 'Network') -and ($tabNames -contains 'Firmware & Security') -and ($tabNames -contains 'Upgrade')) 'Overview/CPU/GPU/Memory/Storage/Gaming/Battery/Live/Network/Firmware & Security/Upgrade tabs'
+    Check (($tabNames -contains 'Overview') -and ($tabNames -contains 'CPU') -and ($tabNames -contains 'GPU') -and ($tabNames -contains 'Memory') -and ($tabNames -contains 'Storage') -and ($tabNames -contains 'Gaming') -and ($tabNames -contains 'Battery') -and ($tabNames -contains 'Live') -and ($tabNames -contains 'Benchmark') -and ($tabNames -contains 'Network') -and ($tabNames -contains 'Firmware & Security') -and ($tabNames -contains 'Upgrade')) 'Overview/CPU/GPU/Memory/Storage/Gaming/Battery/Live/Benchmark/Network/Firmware & Security/Upgrade tabs'
 
     $memTab2 = $tabControl.TabPages | Where-Object { $_.Text -eq 'Memory' } | Select-Object -First 1
     Check ([bool]((Get-AllText $memTab2) -join "`n" -match 'CPU-Z')) 'Memory tab has the MT/s footnote'
@@ -65,6 +67,13 @@ try {
     Check ([bool]($gameText -match 'Storage:'))            'Gaming tab has a Storage line'
     Check ([bool]($gameText -match 'NVMe SSD boot drive')) 'Gaming tab shows the boot drive kind'
     Check ([bool]($gameText -match 'one rank below'))      'Gaming tab caption states the laptop tier rule'
+
+    $benchTab = $tabControl.TabPages | Where-Object { $_.Text -eq 'Benchmark' } | Select-Object -First 1
+    Check ($null -ne $benchTab) 'has Benchmark tab'
+    $benchText = (Get-AllText $benchTab) -join "`n"
+    Check ([bool]($benchText -match 'Run benchmarks'))                'Benchmark tab has the Run button'
+    Check ([bool]($benchText -match 'Nothing runs until you click'))  'Benchmark tab caption states on-demand'
+    Check (-not ($benchText -match 'Context:'))                       'fresh Benchmark tab has no results'
 
     $memTab = $tabControl.TabPages | Where-Object { $_.Text -eq 'Memory' } | Select-Object -First 1
     $lv = $memTab.Controls | Where-Object { $_ -is [System.Windows.Forms.ListView] } | Select-Object -First 1
@@ -138,7 +147,8 @@ try {
     $form2 = New-SystemForm $reportNoBat
     $tc2 = $form2.Controls | Where-Object { $_ -is [System.Windows.Forms.TabControl] } | Select-Object -First 1
     $names2 = @($tc2.TabPages | ForEach-Object { $_.Text })
-    Check ($tc2.TabPages.Count -eq 8)          'desktop: eight tabs (Gaming + Firmware & Security + Upgrade; no Battery/Live/Network)'
+    Check ($tc2.TabPages.Count -eq 9)          'desktop: nine tabs (Gaming + Benchmark + Firmware & Security + Upgrade; no Battery/Live/Network)'
+    Check ($names2 -contains 'Benchmark')      'desktop: Benchmark tab present'
     Check ($names2 -contains 'Gaming')         'desktop: Gaming tab present'
     Check ($names2 -contains 'Firmware & Security') 'desktop: Firmware & Security tab present'
     Check ($names2 -contains 'Upgrade')        'desktop: Upgrade tab present'
@@ -151,6 +161,17 @@ try {
     $ov2Text = (Get-AllText $ov2) -join "`n"
     Check ([bool]($ov2Text -match 'none \(AC only\)')) 'desktop: Overview shows none (AC only)'
     $form2.Dispose()
+
+    # Results renderer: a report with a pre-attached (fake) Benchmark section
+    $report.Benchmark = $benchFake
+    $form3 = New-SystemForm $report
+    $tc3 = $form3.Controls | Where-Object { $_ -is [System.Windows.Forms.TabControl] } | Select-Object -First 1
+    $benchTab3 = $tc3.TabPages | Where-Object { $_.Text -eq 'Benchmark' } | Select-Object -First 1
+    $benchText3 = (Get-AllText $benchTab3) -join "`n"
+    Check ([bool]($benchText3 -match 'arith Mops/s'))       'Benchmark tab renders CPU result'
+    Check ([bool]($benchText3 -match 'theoretical peak'))   'Benchmark tab renders memory reference'
+    Check ([bool]($benchText3 -match 'Context:'))           'Benchmark tab renders context row'
+    $form3.Dispose()
 
     $btns = @($form.Controls | Where-Object { $_ -is [System.Windows.Forms.Button] })
     Check ($btns.Count -eq 2)                                                  'two buttons'

@@ -1722,7 +1722,14 @@ function Invoke-BenchmarkSuite {
     try {
         if (-not ('SysInfoBench' -as [type])) {
             if ($OnStage) { & $OnStage 'compiling workloads (one-time)' }
-            Add-Type -TypeDefinition $script:SysInfoBenchCs -Language CSharp
+            if ($PSVersionTable.PSEdition -eq 'Core') {
+                # pwsh's Add-Type (Roslyn) compiles Debug by default, which disables JIT
+                # optimization and understates the CPU numbers ~2.4x; force /optimize.
+                Add-Type -TypeDefinition $script:SysInfoBenchCs -Language CSharp -CompilerOptions '/optimize'
+            } else {
+                # Windows PowerShell's csc (CodeDom) optimizes by default.
+                Add-Type -TypeDefinition $script:SysInfoBenchCs -Language CSharp
+            }
         }
         $r.ThreadCount = [Environment]::ProcessorCount
         try {

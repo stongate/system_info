@@ -1739,7 +1739,7 @@ function Invoke-BenchmarkSuite {
             $r.CpuMtMops = [math]::Round([SysInfoBench]::CpuMopsAll(2.0), 0)
         } catch { }
         try {
-            $availGB = [math]::Round((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB, 1)
+            $availGB = [math]::Round((Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).FreePhysicalMemory / 1MB, 1)
             if ($availGB -lt 2) { $r.MemSkippedReason = "low available memory ($availGB GB)" }
             else {
                 if ($OnStage) { & $OnStage 'memory copy (1 thread)' }
@@ -1760,8 +1760,10 @@ function Invoke-BenchmarkSuite {
                 $buf = New-Object byte[] (4MB)
                 (New-Object Random(42)).NextBytes($buf)
                 $fs = [IO.File]::Create($tmp)
-                foreach ($i in 1..128) { $fs.Write($buf, 0, $buf.Length) }   # 512 MB
-                $fs.Flush($true); $fs.Close()
+                try {
+                    foreach ($i in 1..128) { $fs.Write($buf, 0, $buf.Length) }   # 512 MB
+                    $fs.Flush($true)
+                } finally { $fs.Dispose() }
                 if ($OnStage) { & $OnStage 'disk read (sequential)' }
                 $r.DiskSeqMBps = [math]::Round([SysInfoBench]::DiskSeqMBps($tmp, 4.0), 0)
                 if ($OnStage) { & $OnStage 'disk read (random 4K)' }

@@ -122,8 +122,9 @@ Passive slices are collector → builder → insights → renderers. Benchmarks 
   ```
 
   - `TheoreticalGBps` = `min(PopulatedSlots,2) × 8 × RunningSpeed / 1000`;
-    `$null` when the running speed is unknown. `ChannelAssumption` carries the
-    "assumes dual-channel" label text (or "single module → 1 channel").
+    `$null` when the running speed or slot count is unknown. `ChannelAssumption`
+    carries the label text: `'assumes dual-channel'` or `'1 module = 1 channel'`
+    (kept short — the GUI KV column doesn't wrap).
   - `RandMBps` = `RandIops × 4096 / 1e6` (derived, shown alongside IOPS).
   - `Context.OnAC`/`PowerPlan` come from the Battery section when present; a
     desktop without one degrades to timestamp-only (the power plan is only

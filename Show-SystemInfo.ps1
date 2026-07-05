@@ -2071,7 +2071,7 @@ function Add-BenchmarkResults {
     if ($null -ne $bmr.Memory.MtGBps) { $mparts += '{0:N1} GB/s (all threads)' -f $bmr.Memory.MtGBps }
     $memStr = if ($mparts.Count) { $mparts -join ' / ' }
               elseif ($bmr.Memory.SkippedReason) { "Unavailable ($($bmr.Memory.SkippedReason))" } else { 'Unavailable' }
-    $memRef = if ($null -ne $bmr.Memory.TheoreticalGBps) { 'theoretical peak ~{0:N1} GB/s ({1})' -f $bmr.Memory.TheoreticalGBps, $bmr.Memory.ChannelAssumption } else { '' }
+    $memRef = if ($mparts.Count -and $null -ne $bmr.Memory.TheoreticalGBps) { 'theoretical peak ~{0:N1} GB/s ({1})' -f $bmr.Memory.TheoreticalGBps, $bmr.Memory.ChannelAssumption } else { '' }
     $dparts = @()
     if ($null -ne $bmr.Disk.SeqMBps) { $dparts += '{0:N0} MB/s sequential' -f $bmr.Disk.SeqMBps }
     if ($null -ne $bmr.Disk.RandIops) { $dparts += '{0:N0} IOPS random 4K (~{1:N1} MB/s)' -f $bmr.Disk.RandIops, $bmr.Disk.RandMBps }
@@ -2478,15 +2478,23 @@ function New-SystemForm {
     $bStatus.ForeColor = [System.Drawing.Color]::Gray
     $tabBench.Controls.Add($bStatus)
     if ($Report.Benchmark) { Add-BenchmarkResults -Tab $tabBench -Benchmark $Report.Benchmark }
+    # Function references are captured because GetNewClosure() binds the handler to
+    # a dynamic module that resolves commands via module -> global only: when the
+    # script is dot-run (.\ or &) instead of launched via -File / SystemInfo.cmd,
+    # script-scope functions are invisible to the closure and the click would die.
+    $fnSuite  = ${function:Invoke-BenchmarkSuite}
+    $fnReport = ${function:New-BenchmarkReport}
+    $fnRender = ${function:Add-BenchmarkResults}
     $btnRun.Add_Click({
         $btnRun.Enabled = $false
-        $onStage = { param($msg) $bStatus.Text = "Running: $msg..."; [System.Windows.Forms.Application]::DoEvents() }.GetNewClosure()
-        $bundle = Invoke-BenchmarkSuite -OnStage $onStage
-        $Report.Benchmark = New-BenchmarkReport -Raw $bundle -Memory $Report.Memory -Battery $Report.Battery -RanAt (Get-Date)
-        Add-BenchmarkResults -Tab $tabBench -Benchmark $Report.Benchmark
-        $bStatus.Text = "Done in $($bundle.ElapsedS)s"
-        $btnRun.Text = 'Run again'
-        $btnRun.Enabled = $true
+        try {
+            $onStage = { param($msg) $bStatus.Text = "Running: $msg..."; [System.Windows.Forms.Application]::DoEvents() }.GetNewClosure()
+            $bundle = & $fnSuite -OnStage $onStage
+            $Report.Benchmark = & $fnReport -Raw $bundle -Memory $Report.Memory -Battery $Report.Battery -RanAt (Get-Date)
+            & $fnRender -Tab $tabBench -Benchmark $Report.Benchmark
+            $bStatus.Text = "Done in $($bundle.ElapsedS)s"
+            $btnRun.Text = 'Run again'
+        } finally { $btnRun.Enabled = $true }
     }.GetNewClosure())
     [void]$tabs.TabPages.Add($tabBench)
 
@@ -2633,9 +2641,12 @@ function New-SystemForm {
     $btnCopy.Location = New-Object System.Drawing.Point(434, 540)
     $btnCopy.Anchor = 'Bottom,Right'
     # Rendered at click time (not form-build time) so an on-demand benchmark run
-    # is included once it exists; output is otherwise identical.
+    # is included once it exists; output is otherwise identical. The function
+    # reference is captured because GetNewClosure() cannot resolve script-scope
+    # functions when the script is dot-run rather than launched via -File.
+    $fnConsole = ${function:Write-SystemConsole}
     $btnCopy.Add_Click({
-        try { [System.Windows.Forms.Clipboard]::SetText((Write-SystemConsole $Report | Out-String).Trim()); $btnCopy.Text = 'Copied!' }
+        try { [System.Windows.Forms.Clipboard]::SetText((& $fnConsole $Report | Out-String).Trim()); $btnCopy.Text = 'Copied!' }
         catch { $btnCopy.Text = 'Copy failed' }
     }.GetNewClosure())
     $form.Controls.Add($btnCopy)

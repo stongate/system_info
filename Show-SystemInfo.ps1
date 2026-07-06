@@ -2692,18 +2692,23 @@ function Invoke-LoadStep {
 function Invoke-SystemInfo {
     param([switch]$Console, [switch]$Benchmark)
 
+    $show = -not ($Console -or $Benchmark)
+    if ($show) { Write-Host 'Reading system information...' }
     try {
-        $modules = @(Get-RamModules)
-        $array   = Get-RamArrayInfo
-        $board   = Get-MotherboardInfo
-        $cpuRaw  = Get-CpuInfo
-        $gpuRaw  = @(Get-GpuInfo)
-        $stRaw   = Get-StorageInfo
-        $batRaw  = Get-BatteryInfo
-        $loadRaw = Get-LoadInfo
-        $netRaw  = Get-NetworkInfo
-        $gsRaw   = Get-GpuSensorInfo
-        $fwRaw   = Get-FirmwareInfo
+        $memRaw  = Invoke-LoadStep -Label 'Memory' -Show $show -Action {
+            [pscustomobject]@{ Modules = @(Get-RamModules); Array = Get-RamArrayInfo; Board = Get-MotherboardInfo }
+        }
+        $modules = @($memRaw.Modules)
+        $array   = $memRaw.Array
+        $board   = $memRaw.Board
+        $cpuRaw  = Invoke-LoadStep -Label 'Processor'               -Show $show -Action { Get-CpuInfo }
+        $gpuRaw  = @(Invoke-LoadStep -Label 'Graphics'             -Show $show -Action { Get-GpuInfo })
+        $stRaw   = Invoke-LoadStep -Label 'Storage'                -Show $show -Action { Get-StorageInfo }
+        $batRaw  = Invoke-LoadStep -Label 'Battery (a few seconds)' -Show $show -Action { Get-BatteryInfo }
+        $loadRaw = Invoke-LoadStep -Label 'Live load'              -Show $show -Action { Get-LoadInfo }
+        $netRaw  = Invoke-LoadStep -Label 'Network'                -Show $show -Action { Get-NetworkInfo }
+        $gsRaw   = Invoke-LoadStep -Label 'GPU sensors'            -Show $show -Action { Get-GpuSensorInfo }
+        $fwRaw   = Invoke-LoadStep -Label 'Firmware & security'    -Show $show -Action { Get-FirmwareInfo }
     } catch {
         $err = "Couldn't read system info from Windows (CIM/WMI): $($_.Exception.Message)"
         if ($Console) { Write-Output $err; return }
@@ -2767,6 +2772,7 @@ function Invoke-SystemInfo {
     if ($Console) { Write-SystemConsole $report; return }
 
     try {
+        if ($show) { Write-Host 'Opening window...' }
         Show-SystemWindow $report
     } catch {
         Write-Output "(GUI unavailable - showing text. $($_.Exception.Message))"

@@ -2676,6 +2676,19 @@ function Show-SystemWindow {
 # Main
 # =====================================================================
 
+function Invoke-LoadStep {
+    # Print a labelled progress line ("  <Label>... " then "done") around a
+    # collector call so the pre-GUI console shows real progress. Returns the
+    # action's output unchanged. A hung/throwing step leaves its line without
+    # "done", naming the culprit. -Show:$false is a silent passthrough (console
+    # / benchmark modes), keeping their output byte-identical.
+    param([string] $Label, [scriptblock] $Action, [bool] $Show = $true)
+    if ($Show) { Write-Host "  $Label... " -NoNewline }
+    $result = & $Action
+    if ($Show) { Write-Host 'done' }
+    return $result
+}
+
 function Invoke-SystemInfo {
     param([switch]$Console, [switch]$Benchmark)
 

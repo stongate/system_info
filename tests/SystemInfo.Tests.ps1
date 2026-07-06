@@ -944,5 +944,19 @@ $repBenchNull = New-SystemReport -Cpu $cpuDev -Memory $memDual
 $repBenchNull.Benchmark = $bmNull
 It 'bench console null'  { Assert-Equal $true ([bool]((Write-SystemConsole $repBenchNull | Out-String) -match 'CPU              : Unavailable')) 'all-null bundle renders Unavailable lines' }
 
+# =====================================================================
+# Startup progress (slice M)
+# =====================================================================
+
+Write-Host "`nInvoke-LoadStep" -ForegroundColor Cyan
+It 'ls quiet ret'    { Assert-Equal 42 (Invoke-LoadStep -Label 'M' -Action { 42 } -Show:$false) 'quiet returns the action value' }
+It 'ls show ret'     { Assert-Equal 42 (Invoke-LoadStep -Label 'M' -Action { 42 } -Show:$true 6>&1 | Where-Object { $_ -isnot [System.Management.Automation.InformationRecord] }) 'showing still returns the value' }
+It 'ls array'        { Assert-Equal 3 (@(Invoke-LoadStep -Label 'M' -Action { 1, 2, 3 } -Show:$false)).Count 'array output round-trips' }
+It 'ls null'         { Assert-Equal $true ($null -eq (Invoke-LoadStep -Label 'M' -Action { $null } -Show:$false)) 'null passes through (no-battery desktop path)' }
+$lsQuiet = @(Invoke-LoadStep -Label 'ZZTOP' -Action { 'v' } -Show:$false 6>&1 | Where-Object { $_ -is [System.Management.Automation.InformationRecord] })
+It 'ls quiet silent' { Assert-Equal 0 $lsQuiet.Count 'quiet prints nothing (console/benchmark gating)' }
+$lsLoud = @(Invoke-LoadStep -Label 'ZZTOP' -Action { 'v' } -Show:$true 6>&1 | Where-Object { $_ -is [System.Management.Automation.InformationRecord] })
+It 'ls show prints'  { Assert-Equal $true ([bool](($lsLoud -join '') -match 'ZZTOP')) 'showing prints the label' }
+
 Write-Host "`n$script:Pass passed, $script:Fail failed`n"
 if ($script:Fail) { exit 1 } else { exit 0 }

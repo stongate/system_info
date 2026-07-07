@@ -60,6 +60,7 @@ try {
     Check ([bool]((Get-AllText $memTab2) -join "`n" -match 'CPU-Z')) 'Memory tab has the MT/s footnote'
     $gfxTab = $tabControl.TabPages | Where-Object { $_.Text -eq 'Graphics' } | Select-Object -First 1
     Check ($null -ne $gfxTab) 'has Graphics tab'
+    Check ($gfxTab.AutoScroll) 'Graphics tab scrolls if its stacked sections overflow'
     $glv = $gfxTab.Controls | Where-Object { $_ -is [System.Windows.Forms.ListView] } | Select-Object -First 1
     Check ($null -ne $glv)         'Graphics tab has a GPU ListView'
     Check ($glv.Items.Count -eq 2) 'two GPU rows'
@@ -111,6 +112,7 @@ try {
 
     $pwrTab = $tabControl.TabPages | Where-Object { $_.Text -eq 'Power' } | Select-Object -First 1
     Check ($null -ne $pwrTab) 'has Power tab'
+    Check ($pwrTab.AutoScroll) 'Power tab scrolls if its stacked sections overflow'
     $pwrText = (Get-AllText $pwrTab) -join "`n"
     Check ([bool]($pwrText -match 'Cycle count'))     'Power tab shows battery labels'
     Check ([bool]($pwrText -match '95,065 mWh'))      'Power tab shows battery design capacity'

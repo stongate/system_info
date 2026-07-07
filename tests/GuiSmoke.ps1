@@ -52,21 +52,25 @@ try {
     Check ($form.Text -eq 'System Info')            'window title'
     $tabControl = $form.Controls | Where-Object { $_ -is [System.Windows.Forms.TabControl] } | Select-Object -First 1
     Check ($null -ne $tabControl)            'has a TabControl'
-    Check ($tabControl.TabPages.Count -eq 12) 'twelve tabs'
+    Check ($tabControl.TabPages.Count -eq 11) 'eleven tabs'
     $tabNames = @($tabControl.TabPages | ForEach-Object { $_.Text })
-    Check (($tabNames -contains 'Overview') -and ($tabNames -contains 'CPU') -and ($tabNames -contains 'GPU') -and ($tabNames -contains 'Memory') -and ($tabNames -contains 'Storage') -and ($tabNames -contains 'Gaming') -and ($tabNames -contains 'Battery') -and ($tabNames -contains 'Live') -and ($tabNames -contains 'Benchmark') -and ($tabNames -contains 'Network') -and ($tabNames -contains 'Firmware & Security') -and ($tabNames -contains 'Upgrade')) 'Overview/CPU/GPU/Memory/Storage/Gaming/Battery/Live/Benchmark/Network/Firmware & Security/Upgrade tabs'
+    Check (($tabNames -contains 'Overview') -and ($tabNames -contains 'CPU') -and ($tabNames -contains 'Graphics') -and ($tabNames -contains 'Memory') -and ($tabNames -contains 'Storage') -and ($tabNames -contains 'Battery') -and ($tabNames -contains 'Live') -and ($tabNames -contains 'Benchmark') -and ($tabNames -contains 'Network') -and ($tabNames -contains 'Firmware & Security') -and ($tabNames -contains 'Upgrade')) 'Overview/CPU/Graphics/Memory/Storage/Battery/Live/Benchmark/Network/Firmware & Security/Upgrade tabs'
 
     $memTab2 = $tabControl.TabPages | Where-Object { $_.Text -eq 'Memory' } | Select-Object -First 1
     Check ([bool]((Get-AllText $memTab2) -join "`n" -match 'CPU-Z')) 'Memory tab has the MT/s footnote'
-    $gameTab = $tabControl.TabPages | Where-Object { $_.Text -eq 'Gaming' } | Select-Object -First 1
-    Check ($null -ne $gameTab) 'has Gaming tab'
-    $gameText = (Get-AllText $gameTab) -join "`n"
-    Check ([bool]($gameText -match 'Overall'))   'Gaming tab shows overall verdict'
-    Check ([bool]($gameText -match '1080p mainstream'))    'Gaming tab shows the (laptop-adjusted) tier'
-    Check ([bool]($gameText -match '\(laptop GPU\)'))      'Gaming tab shows the laptop-variant qualifier'
-    Check ([bool]($gameText -match 'Storage:'))            'Gaming tab has a Storage line'
-    Check ([bool]($gameText -match 'NVMe SSD boot drive')) 'Gaming tab shows the boot drive kind'
-    Check ([bool]($gameText -match 'one rank below'))      'Gaming tab caption states the laptop tier rule'
+    $gfxTab = $tabControl.TabPages | Where-Object { $_.Text -eq 'Graphics' } | Select-Object -First 1
+    Check ($null -ne $gfxTab) 'has Graphics tab'
+    $glv = $gfxTab.Controls | Where-Object { $_ -is [System.Windows.Forms.ListView] } | Select-Object -First 1
+    Check ($null -ne $glv)         'Graphics tab has a GPU ListView'
+    Check ($glv.Items.Count -eq 2) 'two GPU rows'
+    $gfxText = (Get-AllText $gfxTab) -join "`n"
+    Check ([bool]($gfxText -match 'Temperature'))          'Graphics tab shows the live sensor panel'
+    Check ([bool]($gfxText -match 'nvidia-smi'))           'Graphics sensor panel labelled live'
+    Check ([bool]($gfxText -match 'Overall'))              'Graphics tab shows the gaming verdict'
+    Check ([bool]($gfxText -match '1080p mainstream'))     'Graphics tab shows the (laptop-adjusted) tier'
+    Check ([bool]($gfxText -match '\(laptop GPU\)'))       'Graphics tab shows the laptop-variant qualifier'
+    Check ([bool]($gfxText -match 'NVMe SSD boot drive'))  'Graphics tab shows the gaming Storage line'
+    Check ([bool]($gfxText -match 'one rank below'))       'Graphics tab shows the laptop tier caption'
 
     $benchTab = $tabControl.TabPages | Where-Object { $_.Text -eq 'Benchmark' } | Select-Object -First 1
     Check ($null -ne $benchTab) 'has Benchmark tab'
@@ -85,13 +89,6 @@ try {
     Check ($null -ne $tb)                                 'Overview tab has a Notes textbox'
     Check ([bool]($tb.Text -match 'CPU is the limiter'))  'notes populated with insight'
 
-    $gpuTab = $tabControl.TabPages | Where-Object { $_.Text -eq 'GPU' } | Select-Object -First 1
-    $glv = $gpuTab.Controls | Where-Object { $_ -is [System.Windows.Forms.ListView] } | Select-Object -First 1
-    Check ($null -ne $glv)         'GPU tab has a ListView'
-    Check ($glv.Items.Count -eq 2) 'two GPU rows'
-    $gpuText = (Get-AllText $gpuTab) -join "`n"
-    Check ([bool]($gpuText -match 'Temperature')) 'GPU tab shows sensor panel'
-    Check ([bool]($gpuText -match 'nvidia-smi'))  'GPU sensor panel labelled live'
 
     $storTab = $tabControl.TabPages | Where-Object { $_.Text -eq 'Storage' } | Select-Object -First 1
     $storLvs = @()
@@ -147,16 +144,16 @@ try {
     $form2 = New-SystemForm $reportNoBat
     $tc2 = $form2.Controls | Where-Object { $_ -is [System.Windows.Forms.TabControl] } | Select-Object -First 1
     $names2 = @($tc2.TabPages | ForEach-Object { $_.Text })
-    Check ($tc2.TabPages.Count -eq 9)          'desktop: nine tabs (Gaming + Benchmark + Firmware & Security + Upgrade; no Battery/Live/Network)'
+    Check ($tc2.TabPages.Count -eq 8)          'desktop: eight tabs (Graphics + Benchmark + Firmware & Security + Upgrade; no Battery/Live/Network)'
     Check ($names2 -contains 'Benchmark')      'desktop: Benchmark tab present'
-    Check ($names2 -contains 'Gaming')         'desktop: Gaming tab present'
+    Check ($names2 -contains 'Graphics')       'desktop: Graphics tab present'
     Check ($names2 -contains 'Firmware & Security') 'desktop: Firmware & Security tab present'
     Check ($names2 -contains 'Upgrade')        'desktop: Upgrade tab present'
     Check (-not ($names2 -contains 'Battery')) 'desktop: no Battery tab'
     Check (-not ($names2 -contains 'Live'))    'no-load: no Live tab'
     Check (-not ($names2 -contains 'Network')) 'no-net: no Network tab'
-    $gpu2 = $tc2.TabPages | Where-Object { $_.Text -eq 'GPU' } | Select-Object -First 1
-    Check (-not ((Get-AllText $gpu2) -join "`n" -match 'nvidia-smi')) 'no-sensor: GPU tab has no sensor panel'
+    $gfx2 = $tc2.TabPages | Where-Object { $_.Text -eq 'Graphics' } | Select-Object -First 1
+    Check (-not ((Get-AllText $gfx2) -join "`n" -match 'nvidia-smi')) 'no-sensor: Graphics tab has no sensor panel'
     $ov2 = $tc2.TabPages | Where-Object { $_.Text -eq 'Overview' } | Select-Object -First 1
     $ov2Text = (Get-AllText $ov2) -join "`n"
     Check ([bool]($ov2Text -match 'none \(AC only\)')) 'desktop: Overview shows none (AC only)'

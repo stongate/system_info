@@ -2215,12 +2215,16 @@ function New-SystemForm {
     [void](Add-KvBlock -Parent $tabCpu -Keys $cpuKeys -Values $cpuVals -KeyW 150 -ValW 420)
     [void]$tabs.TabPages.Add($tabCpu)
 
-    # --- GPU tab ---
-    $tabGpu = New-Object System.Windows.Forms.TabPage
-    $tabGpu.Text = 'GPU'
-    $tabGpu.Padding = New-Object System.Windows.Forms.Padding(8, 8, 8, 8)
+    # --- Graphics tab (GPU adapters + live sensors + gaming verdict) ---
+    $tabGraphics = New-Object System.Windows.Forms.TabPage
+    $tabGraphics.Text = 'Graphics'
+    $tabGraphics.Padding = New-Object System.Windows.Forms.Padding(8, 8, 8, 8)
+    $tabGraphics.AutoScroll = $true
     $glist = New-Object System.Windows.Forms.ListView
-    $glist.View = 'Details'; $glist.FullRowSelect = $true; $glist.GridLines = $true; $glist.Dock = 'Fill'
+    $glist.View = 'Details'; $glist.FullRowSelect = $true; $glist.GridLines = $true
+    $glist.Location = New-Object System.Drawing.Point(8, 8)
+    $glist.Size = New-Object System.Drawing.Size(596, 86)
+    $glist.Anchor = 'Top,Left,Right'
     [void]$glist.Columns.Add('GPU', 230)
     [void]$glist.Columns.Add('Vendor', 120)
     [void]$glist.Columns.Add('Type', 85)
@@ -2239,7 +2243,7 @@ function New-SystemForm {
             [void]$glist.Items.Add($item)
         }
     }
-    $tabGpu.Controls.Add($glist)
+    $tabGraphics.Controls.Add($glist)
     # Let the GPU-name column (the primary identifier) absorb the slack width.
     $gFill = {
         $other = 0
@@ -2249,16 +2253,15 @@ function New-SystemForm {
     }.GetNewClosure()
     $glist.Add_Resize($gFill)
     & $gFill
-    # Live GPU sensor panel (nvidia-smi), docked below the adapter list.
+    $gRunY = 100
+    # Live GPU sensor panel (nvidia-smi), when present.
     if ($null -ne $Report.GpuSensor) {
         $gsr = $Report.GpuSensor
-        $gsPanel = New-Object System.Windows.Forms.Panel
-        $gsPanel.Dock = 'Bottom'; $gsPanel.Height = 132
         $gsHdr = New-Object System.Windows.Forms.Label
         $gsHdr.Text = 'GPU sensors (live, via nvidia-smi)'
-        $gsHdr.Location = New-Object System.Drawing.Point(4, 2); $gsHdr.AutoSize = $true
+        $gsHdr.Location = New-Object System.Drawing.Point(14, $gRunY); $gsHdr.AutoSize = $true
         $gsHdr.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
-        $gsPanel.Controls.Add($gsHdr)
+        $tabGraphics.Controls.Add($gsHdr)
         $gsKeys = @('Temperature:', 'Utilization:', 'Core clock:', 'Power draw:', 'Perf. state:')
         $gsVals = @(
             $(if ($null -ne $gsr.TempC) { "$($gsr.TempC)$([char]176)C" } else { 'Unknown' })
@@ -2268,10 +2271,40 @@ function New-SystemForm {
             $(if ($gsr.PState) { $gsr.PState } else { 'Unknown' })
         )
         if ($gsr.ThermalThrottle) { $gsKeys += 'Thermal:'; $gsVals += 'THROTTLING (reducing clocks)' }
-        [void](Add-KvBlock -Parent $gsPanel -Keys $gsKeys -Values $gsVals -X 4 -Y 24 -KeyW 110 -ValW 320)
-        $tabGpu.Controls.Add($gsPanel)
+        $gRunY = Add-KvBlock -Parent $tabGraphics -Keys $gsKeys -Values $gsVals -X 14 -Y ($gRunY + 22) -KeyW 110 -ValW 320
+        $gRunY += 10
     }
-    [void]$tabs.TabPages.Add($tabGpu)
+    # Gaming verdict (synthesis of GPU/CPU/memory/display), when a GPU was assessed.
+    if ($null -ne $Report.Gaming) {
+        $gm = $Report.Gaming
+        $gmHdr = New-Object System.Windows.Forms.Label
+        $gmHdr.Text = 'Gaming'
+        $gmHdr.Location = New-Object System.Drawing.Point(14, $gRunY); $gmHdr.AutoSize = $true
+        $gmHdr.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+        $tabGraphics.Controls.Add($gmHdr)
+        $lim = if (@($gm.Limiters).Count -gt 0) { ($gm.Limiters -join ', ') } else { 'none - well balanced' }
+        $disp = if ($null -ne $gm.RefreshHz) { "$($gm.DisplayW)x$($gm.DisplayH) @ $($gm.RefreshHz) Hz" } else { 'Unknown' }
+        $gOverall = $gm.Verdict + $(if ($gm.MobileVariant -and $null -ne $gm.Rank) { ' (laptop GPU)' } else { '' })
+        $gKeys = @('Overall:', 'Limited by:', 'GPU:', 'VRAM:', 'CPU:', 'Memory:', 'Display:', 'Storage:')
+        $gVals = @(
+            $gOverall
+            $lim
+            $(if ($gm.GpuName) { $gm.GpuName } else { 'Unknown' })
+            $(if ($null -ne $gm.VramGB) { "$($gm.VramGB) GB" } else { 'Unknown' })
+            $(if ($null -ne $gm.Cores) { "$($gm.Cores) cores" } else { 'Unknown' })
+            $(if ($null -ne $gm.RamGB) { "$($gm.RamGB) GB $(if ($gm.DualChannel) { 'dual-channel' } else { 'single-channel' })" } else { 'Unknown' })
+            $disp
+            $(if ($gm.BootKind) { "$($gm.BootKind) boot drive" } else { 'Unknown' })
+        )
+        $gy = Add-KvBlock -Parent $tabGraphics -Keys $gKeys -Values $gVals -X 14 -Y ($gRunY + 22) -KeyW 110 -ValW 440
+        $gCap = New-Object System.Windows.Forms.Label
+        $gCap.Text = "Gaming tiering is approximate / generation-level, not a benchmark.`r`nLaptop GPU variants (`"Max-Q`", `"Laptop`") are tiered one rank below the desktop card of the same name."
+        $gCap.Location = New-Object System.Drawing.Point(14, ($gy + 6))
+        $gCap.AutoSize = $true
+        $gCap.ForeColor = [System.Drawing.Color]::Gray
+        $tabGraphics.Controls.Add($gCap)
+    }
+    [void]$tabs.TabPages.Add($tabGraphics)
 
     # --- Memory tab ---
     $tabMem = New-Object System.Windows.Forms.TabPage
@@ -2382,35 +2415,6 @@ function New-SystemForm {
     $tabStorage.Controls.Add($volLbl)     # Top
     $tabStorage.Controls.Add($diskPanel)  # Top (outermost = very top)
     [void]$tabs.TabPages.Add($tabStorage)
-
-    # --- Gaming tab (synthesis; present whenever a GPU was assessed) ---
-    if ($null -ne $Report.Gaming) {
-        $gm = $Report.Gaming
-        $tabGame = New-Object System.Windows.Forms.TabPage
-        $tabGame.Text = 'Gaming'
-        $lim = if (@($gm.Limiters).Count -gt 0) { ($gm.Limiters -join ', ') } else { 'none - well balanced' }
-        $disp = if ($null -ne $gm.RefreshHz) { "$($gm.DisplayW)x$($gm.DisplayH) @ $($gm.RefreshHz) Hz" } else { 'Unknown' }
-        $gOverall = $gm.Verdict + $(if ($gm.MobileVariant -and $null -ne $gm.Rank) { ' (laptop GPU)' } else { '' })
-        $gKeys = @('Overall:', 'Limited by:', 'GPU:', 'VRAM:', 'CPU:', 'Memory:', 'Display:', 'Storage:')
-        $gVals = @(
-            $gOverall
-            $lim
-            $(if ($gm.GpuName) { $gm.GpuName } else { 'Unknown' })
-            $(if ($null -ne $gm.VramGB) { "$($gm.VramGB) GB" } else { 'Unknown' })
-            $(if ($null -ne $gm.Cores) { "$($gm.Cores) cores" } else { 'Unknown' })
-            $(if ($null -ne $gm.RamGB) { "$($gm.RamGB) GB $(if ($gm.DualChannel) { 'dual-channel' } else { 'single-channel' })" } else { 'Unknown' })
-            $disp
-            $(if ($gm.BootKind) { "$($gm.BootKind) boot drive" } else { 'Unknown' })
-        )
-        $gy = Add-KvBlock -Parent $tabGame -Keys $gKeys -Values $gVals -KeyW 110 -ValW 440
-        $gCap = New-Object System.Windows.Forms.Label
-        $gCap.Text = "Gaming tiering is approximate / generation-level, not a benchmark.`r`nLaptop GPU variants (`"Max-Q`", `"Laptop`") are tiered one rank below the desktop card of the same name."
-        $gCap.Location = New-Object System.Drawing.Point(14, ($gy + 6))
-        $gCap.AutoSize = $true
-        $gCap.ForeColor = [System.Drawing.Color]::Gray
-        $tabGame.Controls.Add($gCap)
-        [void]$tabs.TabPages.Add($tabGame)
-    }
 
     # --- Battery tab (only when a battery exists) ---
     if ($null -ne $Report.Battery) {

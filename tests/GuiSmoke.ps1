@@ -72,6 +72,18 @@ try {
     Check ([bool]($gfxText -match 'NVMe SSD boot drive'))  'Graphics tab shows the gaming Storage line'
     Check ([bool]($gfxText -match 'one rank below'))       'Graphics tab shows the laptop tier caption'
 
+    # Regression guard (slice N): the Graphics GPU list must fit the tab width.
+    # A right-anchor added before layout once stretched it ~400px off-screen,
+    # clipping 5 of 6 columns. Show off-screen so the geometry is real.
+    $formG = New-SystemForm $report
+    $formG.StartPosition = 'Manual'; $formG.Location = New-Object System.Drawing.Point(-3000, -3000)
+    $formG.Show(); [System.Windows.Forms.Application]::DoEvents()
+    $tcG = $formG.Controls | Where-Object { $_ -is [System.Windows.Forms.TabControl] } | Select-Object -First 1
+    $gfxTabG = $tcG.TabPages | Where-Object { $_.Text -eq 'Graphics' } | Select-Object -First 1
+    $glvG = $gfxTabG.Controls | Where-Object { $_ -is [System.Windows.Forms.ListView] } | Select-Object -First 1
+    Check ($glvG.Right -le ($gfxTabG.ClientRectangle.Width + 4)) 'Graphics GPU list fits the tab width (all columns reachable)'
+    $formG.Dispose()
+
     $benchTab = $tabControl.TabPages | Where-Object { $_.Text -eq 'Benchmark' } | Select-Object -First 1
     Check ($null -ne $benchTab) 'has Benchmark tab'
     $benchText = (Get-AllText $benchTab) -join "`n"
@@ -88,7 +100,6 @@ try {
     $tb = $ovTab.Controls | Where-Object { $_ -is [System.Windows.Forms.TextBox] } | Select-Object -First 1
     Check ($null -ne $tb)                                 'Overview tab has a Notes textbox'
     Check ([bool]($tb.Text -match 'CPU is the limiter'))  'notes populated with insight'
-
 
     $storTab = $tabControl.TabPages | Where-Object { $_.Text -eq 'Storage' } | Select-Object -First 1
     $storLvs = @()

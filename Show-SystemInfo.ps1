@@ -2224,7 +2224,7 @@ function New-SystemForm {
     $glist.View = 'Details'; $glist.FullRowSelect = $true; $glist.GridLines = $true
     $glist.Location = New-Object System.Drawing.Point(8, 8)
     $glist.Size = New-Object System.Drawing.Size(596, 86)
-    $glist.Anchor = 'Top,Left,Right'
+    $glist.Anchor = 'Top,Left'
     [void]$glist.Columns.Add('GPU', 230)
     [void]$glist.Columns.Add('Vendor', 120)
     [void]$glist.Columns.Add('Type', 85)
@@ -2244,14 +2244,18 @@ function New-SystemForm {
         }
     }
     $tabGraphics.Controls.Add($glist)
-    # Let the GPU-name column (the primary identifier) absorb the slack width.
+    # Fit the list to the tab width and let the GPU-name column absorb the slack.
+    # The list is deliberately NOT right-anchored: a right anchor added before the
+    # tab is laid out captures the 200px default client width and stretches the
+    # list off-screen. Re-fit width from the tab's own Resize instead.
     $gFill = {
+        $glist.Width = $tabGraphics.ClientSize.Width - $glist.Left - 8
         $other = 0
         for ($idx = 1; $idx -lt $glist.Columns.Count; $idx++) { $other += $glist.Columns[$idx].Width }
         $f = $glist.ClientSize.Width - $other
         if ($f -gt 150) { $glist.Columns[0].Width = $f }
     }.GetNewClosure()
-    $glist.Add_Resize($gFill)
+    $tabGraphics.Add_Resize($gFill)
     & $gFill
     $gRunY = 100
     # Live GPU sensor panel (nvidia-smi), when present.

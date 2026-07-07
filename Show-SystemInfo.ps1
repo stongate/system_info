@@ -2420,50 +2420,61 @@ function New-SystemForm {
     $tabStorage.Controls.Add($diskPanel)  # Top (outermost = very top)
     [void]$tabs.TabPages.Add($tabStorage)
 
-    # --- Battery tab (only when a battery exists) ---
-    if ($null -ne $Report.Battery) {
-        $bat = $Report.Battery
-        $tabBattery = New-Object System.Windows.Forms.TabPage
-        $tabBattery.Text = 'Battery'
-        $batKeys = @('Charge:', 'Status:', 'Power source:', 'Health:', 'Design capacity:', 'Full-charge capacity:', 'Cycle count:', 'Chemistry:', 'Manufacturer:', 'Power plan:')
-        $batVals = @(
-            $(if ($null -ne $bat.ChargePercent) { "$($bat.ChargePercent)%" } else { 'Unknown' })
-            $bat.Status
-            $(if ($bat.IsOnAC -eq $true) { 'AC (plugged in)' } elseif ($bat.IsOnAC -eq $false) { 'Battery' } else { 'Unknown' })
-            $(if ($null -ne $bat.WearPercent) { "$($bat.HealthPercent)% of design ($($bat.WearPercent)% worn)" } else { 'Unknown' })
-            $(if ($null -ne $bat.DesignCapacityMWh) { '{0:N0} mWh' -f $bat.DesignCapacityMWh } else { 'Unknown' })
-            $(if ($null -ne $bat.FullChargeCapacityMWh) { '{0:N0} mWh' -f $bat.FullChargeCapacityMWh } else { 'Unknown' })
-            $(if ($null -ne $bat.CycleCount) { "$($bat.CycleCount)" } else { 'Not reported' })
-            $(if ($bat.Chemistry) { $bat.Chemistry } else { 'Unknown' })
-            $(if ($bat.Manufacturer) { $bat.Manufacturer } else { 'Unknown' })
-            $(if ($bat.PowerPlan) { $bat.PowerPlan } else { 'Unknown' })
-        )
-        [void](Add-KvBlock -Parent $tabBattery -Keys $batKeys -Values $batVals -KeyW 150 -ValW 420)
-        [void]$tabs.TabPages.Add($tabBattery)
-    }
-
-    # --- Live tab (only when live load data exists) ---
-    if ($null -ne $Report.Load) {
-        $ld = $Report.Load
-        $status = switch (Get-LoadStatus -Load $ld) { 'pressure' { 'Under pressure' } 'tight' { 'Getting tight' } default { 'OK' } }
-        $tabLive = New-Object System.Windows.Forms.TabPage
-        $tabLive.Text = 'Live'
-        $liveKeys = @('Total RAM:', 'Available:', 'Commit charge:', 'Paging (to disk):', 'Status:')
-        $liveVals = @(
-            $(if ($null -ne $ld.TotalPhysicalGB) { "$($ld.TotalPhysicalGB) GB" } else { 'Unknown' })
-            $(if ($null -ne $ld.AvailableGB) { "$($ld.AvailableGB) GB" + $(if ($null -ne $ld.AvailablePercent) { " ($($ld.AvailablePercent)%)" } else { '' }) } else { 'Unknown' })
-            $(if ($null -ne $ld.CommitPercent) { "{0} GB of {1} GB  ({2}%)" -f $ld.CommitUsedGB, $ld.CommitLimitGB, $ld.CommitPercent } else { 'Unknown' })
-            $(if ($null -ne $ld.PageReadsPerSec) { "~{0:N0} hard reads/sec" -f $ld.PageReadsPerSec } else { 'Unknown' })
-            $status
-        )
-        $ly = Add-KvBlock -Parent $tabLive -Keys $liveKeys -Values $liveVals -KeyW 150 -ValW 420
-        $liveCaption = New-Object System.Windows.Forms.Label
-        $liveCaption.Text = '(live values, as of when this window opened)'
-        $liveCaption.Location = New-Object System.Drawing.Point(14, ($ly + 6))
-        $liveCaption.AutoSize = $true
-        $liveCaption.ForeColor = [System.Drawing.Color]::Gray
-        $tabLive.Controls.Add($liveCaption)
-        [void]$tabs.TabPages.Add($tabLive)
+    # --- Power tab (battery + live memory load; present when either exists) ---
+    if ($null -ne $Report.Battery -or $null -ne $Report.Load) {
+        $tabPower = New-Object System.Windows.Forms.TabPage
+        $tabPower.Text = 'Power'
+        $tabPower.Padding = New-Object System.Windows.Forms.Padding(8, 8, 8, 8)
+        $tabPower.AutoScroll = $true
+        $pRunY = 10
+        if ($null -ne $Report.Battery) {
+            $bat = $Report.Battery
+            $bHdr = New-Object System.Windows.Forms.Label
+            $bHdr.Text = 'Battery'
+            $bHdr.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+            $bHdr.Location = New-Object System.Drawing.Point(14, $pRunY); $bHdr.AutoSize = $true
+            $tabPower.Controls.Add($bHdr)
+            $batKeys = @('Charge:', 'Status:', 'Power source:', 'Health:', 'Design capacity:', 'Full-charge capacity:', 'Cycle count:', 'Chemistry:', 'Manufacturer:', 'Power plan:')
+            $batVals = @(
+                $(if ($null -ne $bat.ChargePercent) { "$($bat.ChargePercent)%" } else { 'Unknown' })
+                $bat.Status
+                $(if ($bat.IsOnAC -eq $true) { 'AC (plugged in)' } elseif ($bat.IsOnAC -eq $false) { 'Battery' } else { 'Unknown' })
+                $(if ($null -ne $bat.WearPercent) { "$($bat.HealthPercent)% of design ($($bat.WearPercent)% worn)" } else { 'Unknown' })
+                $(if ($null -ne $bat.DesignCapacityMWh) { '{0:N0} mWh' -f $bat.DesignCapacityMWh } else { 'Unknown' })
+                $(if ($null -ne $bat.FullChargeCapacityMWh) { '{0:N0} mWh' -f $bat.FullChargeCapacityMWh } else { 'Unknown' })
+                $(if ($null -ne $bat.CycleCount) { "$($bat.CycleCount)" } else { 'Not reported' })
+                $(if ($bat.Chemistry) { $bat.Chemistry } else { 'Unknown' })
+                $(if ($bat.Manufacturer) { $bat.Manufacturer } else { 'Unknown' })
+                $(if ($bat.PowerPlan) { $bat.PowerPlan } else { 'Unknown' })
+            )
+            $pRunY = Add-KvBlock -Parent $tabPower -Keys $batKeys -Values $batVals -X 14 -Y ($pRunY + 22) -KeyW 150 -ValW 420
+            $pRunY += 14
+        }
+        if ($null -ne $Report.Load) {
+            $ld = $Report.Load
+            $status = switch (Get-LoadStatus -Load $ld) { 'pressure' { 'Under pressure' } 'tight' { 'Getting tight' } default { 'OK' } }
+            $lHdr = New-Object System.Windows.Forms.Label
+            $lHdr.Text = 'Live load'
+            $lHdr.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+            $lHdr.Location = New-Object System.Drawing.Point(14, $pRunY); $lHdr.AutoSize = $true
+            $tabPower.Controls.Add($lHdr)
+            $liveKeys = @('Total RAM:', 'Available:', 'Commit charge:', 'Paging (to disk):', 'Status:')
+            $liveVals = @(
+                $(if ($null -ne $ld.TotalPhysicalGB) { "$($ld.TotalPhysicalGB) GB" } else { 'Unknown' })
+                $(if ($null -ne $ld.AvailableGB) { "$($ld.AvailableGB) GB" + $(if ($null -ne $ld.AvailablePercent) { " ($($ld.AvailablePercent)%)" } else { '' }) } else { 'Unknown' })
+                $(if ($null -ne $ld.CommitPercent) { "{0} GB of {1} GB  ({2}%)" -f $ld.CommitUsedGB, $ld.CommitLimitGB, $ld.CommitPercent } else { 'Unknown' })
+                $(if ($null -ne $ld.PageReadsPerSec) { "~{0:N0} hard reads/sec" -f $ld.PageReadsPerSec } else { 'Unknown' })
+                $status
+            )
+            $ly = Add-KvBlock -Parent $tabPower -Keys $liveKeys -Values $liveVals -X 14 -Y ($pRunY + 22) -KeyW 150 -ValW 420
+            $liveCaption = New-Object System.Windows.Forms.Label
+            $liveCaption.Text = '(live values, as of when this window opened)'
+            $liveCaption.Location = New-Object System.Drawing.Point(14, ($ly + 6))
+            $liveCaption.AutoSize = $true
+            $liveCaption.ForeColor = [System.Drawing.Color]::Gray
+            $tabPower.Controls.Add($liveCaption)
+        }
+        [void]$tabs.TabPages.Add($tabPower)
     }
 
     # --- Benchmark tab (on-demand prober; always present - runs only on click) ---
@@ -2541,7 +2552,7 @@ function New-SystemForm {
     if ($null -ne $Report.Firmware) {
         $fw = $Report.Firmware
         $tabFw = New-Object System.Windows.Forms.TabPage
-        $tabFw.Text = 'Firmware & Security'
+        $tabFw.Text = 'Security'
         $tabFw.Padding = New-Object System.Windows.Forms.Padding(8, 8, 8, 8)
 
         $biosStr = if ($fw.Bios.Version) {

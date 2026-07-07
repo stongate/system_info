@@ -52,9 +52,9 @@ try {
     Check ($form.Text -eq 'System Info')            'window title'
     $tabControl = $form.Controls | Where-Object { $_ -is [System.Windows.Forms.TabControl] } | Select-Object -First 1
     Check ($null -ne $tabControl)            'has a TabControl'
-    Check ($tabControl.TabPages.Count -eq 11) 'eleven tabs'
+    Check ($tabControl.TabPages.Count -eq 10) 'ten tabs'
     $tabNames = @($tabControl.TabPages | ForEach-Object { $_.Text })
-    Check (($tabNames -contains 'Overview') -and ($tabNames -contains 'CPU') -and ($tabNames -contains 'Graphics') -and ($tabNames -contains 'Memory') -and ($tabNames -contains 'Storage') -and ($tabNames -contains 'Battery') -and ($tabNames -contains 'Live') -and ($tabNames -contains 'Benchmark') -and ($tabNames -contains 'Network') -and ($tabNames -contains 'Firmware & Security') -and ($tabNames -contains 'Upgrade')) 'Overview/CPU/Graphics/Memory/Storage/Battery/Live/Benchmark/Network/Firmware & Security/Upgrade tabs'
+    Check (($tabNames -contains 'Overview') -and ($tabNames -contains 'CPU') -and ($tabNames -contains 'Graphics') -and ($tabNames -contains 'Memory') -and ($tabNames -contains 'Storage') -and ($tabNames -contains 'Power') -and ($tabNames -contains 'Benchmark') -and ($tabNames -contains 'Network') -and ($tabNames -contains 'Security') -and ($tabNames -contains 'Upgrade')) 'Overview/CPU/Graphics/Memory/Storage/Power/Benchmark/Network/Security/Upgrade tabs'
 
     $memTab2 = $tabControl.TabPages | Where-Object { $_.Text -eq 'Memory' } | Select-Object -First 1
     Check ([bool]((Get-AllText $memTab2) -join "`n" -match 'CPU-Z')) 'Memory tab has the MT/s footnote'
@@ -109,22 +109,18 @@ try {
     }
     Check ($storLvs.Count -eq 2) 'Storage tab has disks + volumes tables'
 
-    $batTab = $tabControl.TabPages | Where-Object { $_.Text -eq 'Battery' } | Select-Object -First 1
-    Check ($null -ne $batTab) 'has Battery tab'
-    $batText = (Get-AllText $batTab) -join "`n"
-    Check ([bool]($batText -match 'Cycle count'))  'Battery tab has KV labels'
-    Check ([bool]($batText -match '95,065 mWh'))   'Battery tab shows design capacity'
-    Check ([bool]($batText -match '45% worn'))     'Battery tab shows wear'
+    $pwrTab = $tabControl.TabPages | Where-Object { $_.Text -eq 'Power' } | Select-Object -First 1
+    Check ($null -ne $pwrTab) 'has Power tab'
+    $pwrText = (Get-AllText $pwrTab) -join "`n"
+    Check ([bool]($pwrText -match 'Cycle count'))     'Power tab shows battery labels'
+    Check ([bool]($pwrText -match '95,065 mWh'))      'Power tab shows battery design capacity'
+    Check ([bool]($pwrText -match '45% worn'))        'Power tab shows battery wear'
+    Check ([bool]($pwrText -match 'Commit charge'))   'Power tab shows live-load labels'
+    Check ([bool]($pwrText -match 'Under pressure'))  'Power tab shows live-load status'
 
     $ovText = (Get-AllText $ovTab) -join "`n"
     Check ([bool]($ovText -match 'Battery:'))       'Overview has a Battery line'
     Check ([bool]($ovText -match '45% worn'))       'Overview battery line shows wear'
-
-    $liveTab = $tabControl.TabPages | Where-Object { $_.Text -eq 'Live' } | Select-Object -First 1
-    Check ($null -ne $liveTab) 'has Live tab'
-    $liveText = (Get-AllText $liveTab) -join "`n"
-    Check ([bool]($liveText -match 'Commit charge'))  'Live tab has KV labels'
-    Check ([bool]($liveText -match 'Under pressure')) 'Live tab shows status'
 
     $netTab = $tabControl.TabPages | Where-Object { $_.Text -eq 'Network' } | Select-Object -First 1
     Check ($null -ne $netTab) 'has Network tab'
@@ -143,8 +139,8 @@ try {
     Check ([bool]($upgText -match 'Hardware upgrades'))  'Upgrade tab shows Hardware upgrades group'
     Check ([bool]($upgText -match 'coarse estimate'))    'Upgrade tab shows the honesty caption'
 
-    $fwTab = $tabControl.TabPages | Where-Object { $_.Text -eq 'Firmware & Security' } | Select-Object -First 1
-    Check ($null -ne $fwTab) 'has Firmware & Security tab'
+    $fwTab = $tabControl.TabPages | Where-Object { $_.Text -eq 'Security' } | Select-Object -First 1
+    Check ($null -ne $fwTab) 'has Security tab'
     $fwText = (Get-AllText $fwTab) -join "`n"
     Check ([bool]($fwText -match 'Windows 11 readiness')) 'Firmware tab shows readiness checklist'
     Check ([bool]($fwText -match 'running Windows 11'))    'Firmware tab shows the summary verdict'
@@ -155,13 +151,12 @@ try {
     $form2 = New-SystemForm $reportNoBat
     $tc2 = $form2.Controls | Where-Object { $_ -is [System.Windows.Forms.TabControl] } | Select-Object -First 1
     $names2 = @($tc2.TabPages | ForEach-Object { $_.Text })
-    Check ($tc2.TabPages.Count -eq 8)          'desktop: eight tabs (Graphics + Benchmark + Firmware & Security + Upgrade; no Battery/Live/Network)'
+    Check ($tc2.TabPages.Count -eq 8)          'desktop: eight tabs (Graphics + Benchmark + Security + Upgrade; no Power/Network)'
     Check ($names2 -contains 'Benchmark')      'desktop: Benchmark tab present'
     Check ($names2 -contains 'Graphics')       'desktop: Graphics tab present'
-    Check ($names2 -contains 'Firmware & Security') 'desktop: Firmware & Security tab present'
+    Check ($names2 -contains 'Security') 'desktop: Security tab present'
     Check ($names2 -contains 'Upgrade')        'desktop: Upgrade tab present'
-    Check (-not ($names2 -contains 'Battery')) 'desktop: no Battery tab'
-    Check (-not ($names2 -contains 'Live'))    'no-load: no Live tab'
+    Check (-not ($names2 -contains 'Power'))   'desktop: no Power tab (no battery, no load)'
     Check (-not ($names2 -contains 'Network')) 'no-net: no Network tab'
     $gfx2 = $tc2.TabPages | Where-Object { $_.Text -eq 'Graphics' } | Select-Object -First 1
     Check (-not ((Get-AllText $gfx2) -join "`n" -match 'nvidia-smi')) 'no-sensor: Graphics tab has no sensor panel'
